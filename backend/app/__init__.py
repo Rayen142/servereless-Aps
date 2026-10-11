@@ -1,0 +1,1 @@
+"""Serverless attendance API package."""

@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless real-time attendance API.
+
+Parameters:
+  RekognitionCollectionId:
+    Type: String
+    Default: attendance-faces
+    Description: Existing Amazon Rekognition collection containing enrolled faces.
+
+Globals:
+  Function:
+    Timeout: 2
+    MemorySize: 1024
+    Runtime: python3.12
+
+Resources:
+  AttendanceApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Cors: "'*'"
+      StageName: v1
+
+  AttendanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: app.handler.lambda_handler
+      Events:
+        VerifyAttendance:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/verify
+            Method: post
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AttendanceTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rekognition:SearchFacesByImage
+              Resource: !Sub arn:${AWS::Partition}:rekognition:${AWS::Region}:${AWS::AccountId}:collection/${RekognitionCollectionId}
+      Environment:
+        Variables:
+          ATTENDANCE_TABLE_NAME: !Ref AttendanceTable
+          REKOGNITION_COLLECTION_ID: !Ref RekognitionCollectionId
+          MATCH_THRESHOLD: '80'
+
+  AttendanceTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: attendanceId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: attendanceId
+          KeyType: HASH
