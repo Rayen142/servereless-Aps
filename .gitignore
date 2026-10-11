@@ -8,3 +8,4 @@ __pycache__/
 venv/
 .venv/
 *.py[cod]
+dataset/local_attendance_log.json

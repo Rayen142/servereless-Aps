@@ -9,6 +9,7 @@ import {
   validateFaces,
   type FaceAssessment,
   type FaceStatus,
+  type FaceTrackingBox,
 } from '../lib/faceValidation';
 import { isVideoFrameReady } from '../lib/video';
 import { useBlazeFaceModel, type ModelStatus } from './useBlazeFaceModel';
@@ -30,6 +31,8 @@ export interface FaceDetectionResult {
   readonly guidance: string;
   /** Progres timer auto-capture, 0 sampai 1. */
   readonly holdProgress: number;
+  /** Koordinat kotak tracking wajah dan titik landmark dalam persentase (0..100). */
+  readonly trackingBox: FaceTrackingBox | null;
 }
 
 const DETECTION_INTERVAL_MS = 100;
@@ -39,6 +42,7 @@ interface AnalysisState {
   readonly faceStatus: FaceStatus;
   readonly guidance: string;
   readonly holdProgress: number;
+  readonly trackingBox: FaceTrackingBox | null;
   readonly hasScanFailed: boolean;
 }
 
@@ -55,6 +59,7 @@ const INITIAL_ANALYSIS: AnalysisState = {
   faceStatus: FACE_ASSESSMENT.noFace.status,
   guidance: FACE_ASSESSMENT.noFace.message,
   holdProgress: 0,
+  trackingBox: null,
   hasScanFailed: false,
 };
 
@@ -63,6 +68,7 @@ const IDLE_RESULT: FaceDetectionResult = {
   faceStatus: INITIAL_ANALYSIS.faceStatus,
   guidance: INITIAL_ANALYSIS.guidance,
   holdProgress: 0,
+  trackingBox: null,
 };
 
 const UNAVAILABLE_RESULT: FaceDetectionResult = {
@@ -70,6 +76,7 @@ const UNAVAILABLE_RESULT: FaceDetectionResult = {
   faceStatus: FACE_ASSESSMENT.detectorUnavailable.status,
   guidance: FACE_ASSESSMENT.detectorUnavailable.message,
   holdProgress: 0,
+  trackingBox: null,
 };
 
 const analysisReducer = (
@@ -92,7 +99,8 @@ const analysisReducer = (
       if (
         state.faceStatus === assessment.status &&
         state.guidance === assessment.message &&
-        state.holdProgress === holdProgress
+        state.holdProgress === holdProgress &&
+        state.trackingBox === assessment.trackingBox
       ) {
         return state;
       }
@@ -101,6 +109,7 @@ const analysisReducer = (
         faceStatus: assessment.status,
         guidance: assessment.message,
         holdProgress,
+        trackingBox: assessment.trackingBox,
         hasScanFailed: false,
       };
     }
@@ -262,5 +271,6 @@ export function useFaceDetection({
     faceStatus: analysis.faceStatus,
     guidance: analysis.guidance,
     holdProgress: analysis.holdProgress,
+    trackingBox: analysis.trackingBox,
   };
 }

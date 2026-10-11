@@ -1,303 +1,345 @@
+import { useEffect, useState } from 'react';
 import {
   useAttendanceVerification,
-  type VerificationFeedback,
+  type RecognizedPerson,
 } from '../hooks/useAttendanceVerification';
-import {
-  useFaceDetection,
-  type FaceDetectionResult,
-} from '../hooks/useFaceDetection';
+import { useFaceDetection } from '../hooks/useFaceDetection';
 import { useFrameCapture } from '../hooks/useFrameCapture';
-import {
-  useWebCamera,
-  type CameraErrorCode,
-  type UseWebCameraResult,
-} from '../hooks/useWebCamera';
+import { useWebCamera } from '../hooks/useWebCamera';
+import { captureVideoFrame } from '../lib/video';
+import { hasRealAllergy, POLIKLINIK_LIST } from '../lib/hospital';
+import CameraView from './CameraView';
+import { AlertIcon, PrinterIcon, RefreshIcon, ScanIcon } from './icons';
 
-interface NoticeCopy {
-  readonly title: string;
-  readonly message: string;
-}
+const AUTO_POLI = 'auto';
 
-const PREPARING_NOTICE: NoticeCopy = {
-  title: 'Menyiapkan kamera',
-  message: 'Mohon tunggu sebentar saat kami meminta akses kamera perangkat.',
-};
+/* -------------------------------------------------------------------------- */
 
-const CAMERA_ERROR_TITLES: Record<CameraErrorCode, string> = {
-  permission_denied: 'Akses kamera diperlukan',
-  device_not_found: 'Kamera tidak ditemukan',
-  unsupported: 'Kamera tidak ditemukan',
-  device_busy: 'Kamera tidak dapat digunakan',
-  unknown: 'Kamera tidak dapat digunakan',
-};
-
-const GUIDE_CORNER_CLASSES = [
-  'absolute left-[-1px] top-[-1px] h-8 w-8 rounded-tl-[2rem] border-l-2 border-t-2',
-  'absolute right-[-1px] top-[-1px] h-8 w-8 rounded-tr-[2rem] border-r-2 border-t-2',
-  'absolute bottom-[-1px] left-[-1px] h-8 w-8 rounded-bl-[2rem] border-b-2 border-l-2',
-  'absolute bottom-[-1px] right-[-1px] h-8 w-8 rounded-br-[2rem] border-b-2 border-r-2',
-] as const;
-
-const getCameraNotice = (camera: UseWebCameraResult): NoticeCopy =>
-  camera.status === 'error'
-    ? {
-        title: CAMERA_ERROR_TITLES[camera.error.code],
-        message: camera.error.message,
-      }
-    : PREPARING_NOTICE;
-
-interface CapturePreviewProps {
-  readonly image: string;
-  readonly feedback: VerificationFeedback | null;
-  readonly isSubmitting: boolean;
-  readonly onRetake: () => void;
-  readonly onConfirm: () => void;
-}
-
-function CapturePreview({
-  image,
-  feedback,
-  isSubmitting,
-  onRetake,
-  onConfirm,
-}: CapturePreviewProps) {
+function EmptyState() {
   return (
-    <>
-      <img
-        src={image}
-        alt="Pratinjau hasil tangkapan wajah"
-        className="h-full w-full object-cover"
-      />
-      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-3 bg-slate-950/75 p-5 backdrop-blur-md sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-sm font-semibold text-white">Tangkapan berhasil</p>
-          <p className="mt-1 text-xs text-slate-300">Pastikan hasil foto terlihat jelas sebelum konfirmasi.</p>
-          {feedback && (
-            <div
-              role="alert"
-              aria-live="polite"
-              className={`mt-3 rounded-xl px-3 py-2 text-xs font-medium ${
-                feedback.type === 'success'
-                  ? 'bg-emerald-400/15 text-emerald-200'
-                  : 'bg-rose-400/15 text-rose-200'
-              }`}
-            >
-              {feedback.message}
-            </div>
-          )}
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <button
-            type="button"
-            onClick={onRetake}
-            disabled={isSubmitting}
-            className="rounded-full border border-white/20 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-teal-200 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Ulangi
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={isSubmitting}
-            className="flex items-center gap-2 rounded-full bg-teal-400 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-teal-300 focus:outline-none focus:ring-2 focus:ring-teal-200 disabled:cursor-wait disabled:opacity-70"
-          >
-            {isSubmitting && (
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-950/30 border-t-slate-950" />
-            )}
-            {isSubmitting ? 'Memverifikasi Biometrik...' : 'Konfirmasi Absen'}
-          </button>
-        </div>
+    <div className="flex h-full min-h-[22rem] flex-col items-center justify-center rounded-3xl border border-dashed border-neutral-200 px-8 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-neutral-100 text-neutral-500">
+        <ScanIcon width={22} height={22} />
       </div>
-    </>
-  );
-}
-
-function FaceGuide({ detection }: { readonly detection: FaceDetectionResult }) {
-  const isFaceValid = detection.faceStatus === 'valid';
-  const cornerTone = isFaceValid ? 'border-emerald-300' : 'border-teal-300';
-
-  return (
-    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-6 pb-8 pt-6 text-center text-white">
-      <div
-        className={`relative h-[60%] w-[60%] max-w-[22rem] rounded-[2rem] border bg-white/[0.03] shadow-[0_0_0_999px_rgba(2,6,23,0.08)] backdrop-blur-[1px] transition-colors duration-300 ${
-          isFaceValid
-            ? 'border-emerald-300 shadow-[0_0_0_999px_rgba(2,6,23,0.08),0_0_28px_rgba(52,211,153,0.35)]'
-            : 'border-white/50'
-        }`}
-      >
-        {GUIDE_CORNER_CLASSES.map((cornerClasses) => (
-          <span key={cornerClasses} className={`${cornerClasses} ${cornerTone}`} />
-        ))}
-      </div>
-      <div className="mt-5 w-full max-w-sm rounded-2xl bg-slate-950/60 px-4 py-3 backdrop-blur-md">
-        <p className="text-sm font-medium tracking-wide">{detection.guidance}</p>
-        {isFaceValid && (
-          <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/20">
-            <div
-              className="h-full rounded-full bg-emerald-300 transition-[width] duration-100"
-              style={{ width: `${detection.holdProgress * 100}%` }}
-            />
-          </div>
-        )}
-        {!isFaceValid && detection.detectorStatus === 'loading' && (
-          <p className="mt-1 text-xs text-slate-300">Menyiapkan deteksi wajah...</p>
-        )}
-      </div>
+      <p className="mt-4 text-sm font-medium text-neutral-900">Belum ada pasien</p>
+      <p className="mt-1 max-w-xs text-sm leading-6 text-neutral-500">
+        Hadapkan wajah ke kamera dan tahan sebentar. Data pasien dan tiket antrean
+        akan muncul di sini.
+      </p>
     </div>
   );
 }
 
-interface CameraNoticeProps {
-  readonly notice: NoticeCopy;
-  readonly isPreparing: boolean;
-  readonly onRetry?: () => void;
-}
-
-function CameraNotice({ notice, isPreparing, onRetry }: CameraNoticeProps) {
-  return (
-    <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
-      <div className="max-w-sm">
-        {isPreparing && (
-          <span className="mx-auto mb-5 block h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-teal-300" />
-        )}
-        <p className="text-lg font-semibold text-white">{notice.title}</p>
-        <p className="mt-2 text-sm leading-6 text-slate-300">{notice.message}</p>
-        {onRetry && (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="mt-6 rounded-full bg-teal-400 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-teal-300 focus:outline-none focus:ring-2 focus:ring-teal-200 focus:ring-offset-2 focus:ring-offset-slate-950"
-          >
-            Coba lagi
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-type BadgeTone = 'pending' | 'live' | 'valid';
-
-const BADGE_DOT_CLASSES: Record<BadgeTone, string> = {
-  pending: 'bg-amber-300',
-  live: 'bg-teal-300',
-  valid: 'bg-emerald-400',
-};
-
-const BADGE_LIVE_LABELS = {
-  live: 'Live preview',
-  valid: 'Wajah terdeteksi',
-} as const;
-
-const getBadgeTone = (isReady: boolean, isFaceValid: boolean): BadgeTone => {
-  if (!isReady) {
-    return 'pending';
+function QueueTicketCard({
+  patient,
+  onNext,
+}: {
+  readonly patient: RecognizedPerson;
+  readonly onNext: () => void;
+}) {
+  const ticket = patient.queueTicket;
+  if (!ticket) {
+    return null;
   }
 
-  return isFaceValid ? 'valid' : 'live';
-};
-
-interface StatusBadgeProps {
-  readonly tone: BadgeTone;
-  readonly pendingLabel: string;
-}
-
-function StatusBadge({ tone, pendingLabel }: StatusBadgeProps) {
-  const label = tone === 'pending' ? pendingLabel : BADGE_LIVE_LABELS[tone];
-
   return (
-    <div className="absolute bottom-5 left-5 flex items-center gap-2 rounded-full bg-slate-950/60 px-3.5 py-2 text-xs font-medium text-white backdrop-blur-md">
-      <span className={`h-2 w-2 rounded-full ${BADGE_DOT_CLASSES[tone]}`} />
-      {label}
+    <div className="rounded-3xl bg-neutral-900 p-6 text-white">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-xs text-neutral-400">Nomor antrean</p>
+          <p className="mt-1 text-5xl font-semibold tracking-tight">
+            {ticket.queueNumber}
+          </p>
+        </div>
+        <span className="rounded-full bg-emerald-400/15 px-2.5 py-1 text-[11px] font-medium text-emerald-300">
+          Menunggu panggilan
+        </span>
+      </div>
+
+      <div className="mt-6 grid grid-cols-2 gap-4 border-t border-white/10 pt-5 text-sm">
+        <div>
+          <p className="text-xs text-neutral-400">Poliklinik</p>
+          <p className="mt-0.5 font-medium">{ticket.poliklinik}</p>
+        </div>
+        <div>
+          <p className="text-xs text-neutral-400">Ruang</p>
+          <p className="mt-0.5 font-medium">{ticket.room}</p>
+        </div>
+        <div className="col-span-2">
+          <p className="text-xs text-neutral-400">Dokter</p>
+          <p className="mt-0.5 font-medium">{ticket.dokter}</p>
+        </div>
+      </div>
+
+      <div className="mt-6 flex gap-2">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-white px-4 py-2.5 text-sm font-medium text-neutral-900 transition hover:bg-neutral-200"
+        >
+          <PrinterIcon width={16} height={16} />
+          Cetak tiket
+        </button>
+        <button
+          type="button"
+          onClick={onNext}
+          className="inline-flex flex-1 items-center justify-center rounded-full border border-white/15 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/10"
+        >
+          Pasien berikutnya
+        </button>
+      </div>
     </div>
   );
 }
 
-interface LiveCameraViewProps {
-  readonly camera: UseWebCameraResult;
-  readonly detection: FaceDetectionResult;
-}
-
-function LiveCameraView({ camera, detection }: LiveCameraViewProps) {
-  const isReady = camera.status === 'ready';
-  const notice = getCameraNotice(camera);
+function PatientDetails({ patient }: { readonly patient: RecognizedPerson }) {
+  const allergy = hasRealAllergy(patient.allergies);
 
   return (
-    <>
-      <video
-        ref={camera.videoRef}
-        autoPlay
-        muted
-        playsInline
-        className={`h-full w-full object-cover transition-opacity duration-500 ${
-          isReady ? 'opacity-100' : 'opacity-0'
+    <div className="rounded-3xl border border-neutral-200 bg-white p-6">
+      {/* Identitas */}
+      <div className="flex items-center gap-4">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-sm font-semibold text-neutral-700">
+          {patient.fullName
+            .split(' ')
+            .slice(0, 2)
+            .map((w) => w[0])
+            .join('')
+            .toUpperCase()}
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold text-neutral-900">
+            {patient.fullName}
+          </p>
+          <p className="text-sm text-neutral-500">
+            {patient.noRm} · {patient.gender} · {patient.age} th
+          </p>
+        </div>
+      </div>
+
+      <dl className="mt-6 grid grid-cols-3 gap-4 text-sm">
+        <div>
+          <dt className="text-xs text-neutral-500">Gol. darah</dt>
+          <dd className="mt-0.5 font-medium text-neutral-900">{patient.bloodType}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-neutral-500">Jaminan</dt>
+          <dd className="mt-0.5 font-medium text-neutral-900">{patient.insurance}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-neutral-500">Kecocokan</dt>
+          <dd className="mt-0.5 font-medium text-neutral-900">
+            {patient.similarity.toFixed(1)}%
+          </dd>
+        </div>
+      </dl>
+
+      {/* Alergi */}
+      <div
+        className={`mt-6 flex gap-3 rounded-2xl p-4 text-sm ${
+          allergy ? 'bg-rose-50 text-rose-900' : 'bg-neutral-50 text-neutral-700'
         }`}
-        aria-label="Live feed kamera"
-      />
+      >
+        {allergy && <AlertIcon className="mt-0.5 shrink-0 text-rose-600" width={16} height={16} />}
+        <div>
+          <p className={`text-xs ${allergy ? 'text-rose-700' : 'text-neutral-500'}`}>
+            Alergi
+          </p>
+          <p className="mt-0.5 font-medium">{patient.allergies}</p>
+        </div>
+      </div>
 
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_35%,rgba(2,6,23,0.3)_100%)]" />
+      <div className="mt-3 rounded-2xl bg-neutral-50 p-4 text-sm">
+        <p className="text-xs text-neutral-500">Penyakit penyerta</p>
+        <p className="mt-0.5 font-medium text-neutral-900">{patient.chronicConditions}</p>
+      </div>
 
-      {isReady ? (
-        <FaceGuide detection={detection} />
-      ) : (
-        <CameraNotice
-          notice={notice}
-          isPreparing={camera.status !== 'error'}
-          onRetry={camera.status === 'error' ? camera.retry : undefined}
-        />
-      )}
-
-      <StatusBadge
-        tone={getBadgeTone(isReady, detection.faceStatus === 'valid')}
-        pendingLabel={notice.title}
-      />
-    </>
+      {/* Riwayat */}
+      <div className="mt-6">
+        <p className="text-xs font-medium uppercase tracking-wider text-neutral-500">
+          Riwayat berobat
+        </p>
+        {patient.medicalHistory.length === 0 ? (
+          <p className="mt-3 text-sm text-neutral-500">Belum ada riwayat kunjungan.</p>
+        ) : (
+          <ol className="mt-3 space-y-4 border-l border-neutral-200 pl-4">
+            {patient.medicalHistory.map((item, idx) => (
+              <li key={`${item.date}-${idx}`} className="relative">
+                <span className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full bg-neutral-300" />
+                <p className="text-xs text-neutral-500">
+                  {item.date} · {item.poliklinik}
+                </p>
+                <p className="mt-0.5 text-sm font-medium text-neutral-900">
+                  {item.diagnosis}
+                </p>
+                <p className="mt-0.5 text-sm text-neutral-600">{item.treatment}</p>
+                <p className="mt-0.5 text-xs text-neutral-400">{item.doctor}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </div>
   );
 }
+
+/* -------------------------------------------------------------------------- */
 
 function AttendanceCamera() {
   const frame = useFrameCapture();
   const verification = useAttendanceVerification();
+  const [poli, setPoli] = useState<string>(AUTO_POLI);
   const camera = useWebCamera({ enabled: frame.image === null });
-  const detection = useFaceDetection({
-    videoRef: camera.videoRef,
-    enabled: camera.status === 'ready',
-    onHoldComplete: () => {
-      if (frame.capture(camera.videoRef.current)) {
-        verification.reset();
-      }
-    },
-  });
 
-  const handleRetake = () => {
-    frame.discard();
-    verification.reset();
+  const issueTicket = (image: string) => {
+    void verification.submit(image, poli === AUTO_POLI ? undefined : poli);
   };
 
-  const handleConfirm = () => {
-    if (frame.image !== null) {
-      void verification.submit(frame.image);
+  const captureAndIssue = () => {
+    const snap = frame.capture(camera.videoRef.current);
+    if (snap) {
+      verification.reset();
+      issueTicket(snap);
     }
   };
 
-  return (
-    <section className="w-full" aria-label="Kamera absensi">
-      <div className="relative mx-auto aspect-[4/3] w-full max-w-4xl overflow-hidden rounded-[1.75rem] bg-slate-950 shadow-[0_24px_70px_-28px_rgba(15,23,42,0.6)] ring-1 ring-slate-200">
-        {frame.image !== null ? (
-          <CapturePreview
-            image={frame.image}
-            feedback={verification.feedback}
-            isSubmitting={verification.isSubmitting}
-            onRetake={handleRetake}
-            onConfirm={handleConfirm}
-          />
-        ) : (
-          <LiveCameraView camera={camera} detection={detection} />
-        )}
+  const detection = useFaceDetection({
+    videoRef: camera.videoRef,
+    enabled: camera.status === 'ready' && frame.image === null,
+    onHoldComplete: captureAndIssue,
+  });
 
-        {frame.isFlashing && <div className="pointer-events-none absolute inset-0 animate-pulse bg-white/80" />}
-      </div>
-    </section>
+  const hasFace = detection.trackingBox !== null;
+
+  // Identifikasi ringan di latar belakang agar nama tampil di atas wajah.
+  useEffect(() => {
+    if (camera.status !== 'ready' || !hasFace) {
+      return undefined;
+    }
+    const identify = () => {
+      const snap = captureVideoFrame(camera.videoRef.current, 0.7);
+      if (snap) {
+        void verification.identifyLive(snap);
+      }
+    };
+    identify();
+    const id = window.setInterval(identify, 2500);
+    return () => window.clearInterval(id);
+  }, [camera.status, camera.videoRef, hasFace, verification.identifyLive]);
+
+  const handleNext = () => {
+    frame.discard();
+    verification.reset();
+    verification.clearLiveIdentity();
+  };
+
+  const live = verification.liveIdentity;
+  const patient = verification.feedback?.person ?? (frame.image ? live : null);
+  const error = verification.feedback?.type === 'error' ? verification.feedback.message : null;
+
+  const statusText = (() => {
+    if (frame.image) {
+      if (verification.isSubmitting) return 'Mencocokkan wajah…';
+      if (error) return error;
+      if (patient?.queueTicket) return 'Tiket antrean diterbitkan';
+      return 'Foto diambil';
+    }
+    if (camera.status !== 'ready') return 'Menyiapkan kamera';
+    if (!hasFace) return 'Hadapkan wajah ke kamera';
+    if (detection.faceStatus === 'valid') return 'Tahan posisi…';
+    return detection.guidance;
+  })();
+
+  return (
+    <div className="grid gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+      {/* Kamera */}
+      <section className="space-y-4">
+        <CameraView
+          camera={camera}
+          detection={detection}
+          capturedImage={frame.image}
+          isFlashing={frame.isFlashing}
+          faceLabel={live ? live.fullName : null}
+          faceSubLabel={live ? live.noRm : null}
+          faceAlert={live ? hasRealAllergy(live.allergies) : false}
+        >
+          {frame.image && verification.isSubmitting && (
+            <div className="absolute inset-0 flex items-center justify-center bg-neutral-900/40 backdrop-blur-[2px]">
+              <span className="h-7 w-7 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+            </div>
+          )}
+        </CameraView>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p
+            className={`flex items-center gap-2 text-sm ${
+              error ? 'text-rose-600' : 'text-neutral-600'
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                error
+                  ? 'bg-rose-500'
+                  : hasFace || frame.image
+                    ? 'bg-emerald-500'
+                    : 'bg-neutral-300'
+              }`}
+            />
+            {statusText}
+          </p>
+
+          <div className="flex items-center gap-2">
+            <select
+              value={poli}
+              onChange={(e) => setPoli(e.target.value)}
+              aria-label="Poliklinik tujuan"
+              className="h-10 rounded-full border border-neutral-200 bg-white px-4 text-sm text-neutral-700 outline-none transition focus:border-neutral-400"
+            >
+              <option value={AUTO_POLI}>Poli sesuai riwayat</option>
+              {POLIKLINIK_LIST.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+
+            {frame.image ? (
+              <button
+                type="button"
+                onClick={handleNext}
+                disabled={verification.isSubmitting}
+                className="inline-flex h-10 items-center gap-2 rounded-full border border-neutral-200 bg-white px-4 text-sm font-medium text-neutral-800 transition hover:bg-neutral-50 disabled:opacity-50"
+              >
+                <RefreshIcon width={15} height={15} />
+                Scan ulang
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={captureAndIssue}
+                disabled={camera.status !== 'ready'}
+                className="inline-flex h-10 items-center gap-2 rounded-full bg-neutral-900 px-5 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:opacity-40"
+              >
+                <ScanIcon width={15} height={15} />
+                Scan sekarang
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Panel pasien */}
+      <section className="space-y-4">
+        {patient ? (
+          <>
+            <QueueTicketCard patient={patient} onNext={handleNext} />
+            <PatientDetails patient={patient} />
+          </>
+        ) : (
+          <EmptyState />
+        )}
+      </section>
+    </div>
   );
 }
 

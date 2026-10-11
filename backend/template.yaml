@@ -33,6 +33,12 @@ Resources:
             RestApiId: !Ref AttendanceApi
             Path: /attendance/verify
             Method: post
+        EnrollFace:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/enroll
+            Method: post
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AttendanceTable
@@ -40,6 +46,7 @@ Resources:
             - Effect: Allow
               Action:
                 - rekognition:SearchFacesByImage
+                - rekognition:IndexFaces
               Resource: !Sub arn:${AWS::Partition}:rekognition:${AWS::Region}:${AWS::AccountId}:collection/${RekognitionCollectionId}
       Environment:
         Variables:

@@ -8,8 +8,8 @@ export interface UseFrameCaptureResult {
   /** Data URL JPEG hasil tangkapan; `null` selama mode kamera langsung. */
   readonly image: string | null;
   readonly isFlashing: boolean;
-  /** Mengembalikan `true` jika frame berhasil ditangkap. */
-  readonly capture: (video: HTMLVideoElement | null) => boolean;
+  /** Mengembalikan data URL frame jika berhasil ditangkap, `null` jika gagal. */
+  readonly capture: (video: HTMLVideoElement | null) => string | null;
   /** Membuang tangkapan untuk kembali ke kamera langsung. */
   readonly discard: () => void;
 }
@@ -27,10 +27,10 @@ export function useFrameCapture(): UseFrameCaptureResult {
   }, []);
 
   const capture = useCallback(
-    (video: HTMLVideoElement | null): boolean => {
+    (video: HTMLVideoElement | null): string | null => {
       const frame = captureVideoFrame(video, JPEG_QUALITY);
       if (frame === null) {
-        return false;
+        return null;
       }
 
       clearFlashTimer();
@@ -41,7 +41,7 @@ export function useFrameCapture(): UseFrameCaptureResult {
         setIsFlashing(false);
       }, FLASH_DURATION_MS);
 
-      return true;
+      return frame;
     },
     [clearFlashTimer],
   );

@@ -1,47 +1,105 @@
+import { useState } from 'react';
 import AttendanceCamera from './components/AttendanceCamera';
+import FaceRegistrationPage from './components/FaceRegistrationPage';
+
+type ActivePage = 'attendance' | 'register';
 
 function App() {
+  const [activePage, setActivePage] = useState<ActivePage>('attendance');
+
   return (
-    <main className="min-h-screen bg-[#f4f7f8] px-5 py-6 text-slate-950 sm:px-8 sm:py-8">
-      <div className="mx-auto max-w-7xl">
-        <header className="flex items-center justify-between border-b border-slate-200/80 pb-6">
+    <div className="min-h-screen bg-[#fafafa] text-neutral-900 antialiased">
+      {/* Top Bar Minimalis */}
+      <header className="sticky top-0 z-20 border-b border-neutral-200/80 bg-white/80 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3.5 sm:px-8">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-950 text-sm font-bold text-teal-300 shadow-lg shadow-slate-950/10">
-              RA
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-neutral-900 text-xs font-bold tracking-tight text-white">
+              RS
             </div>
             <div>
-              <p className="text-sm font-bold tracking-tight text-slate-950">Real-time Attendance</p>
-              <p className="mt-0.5 text-xs font-medium text-slate-500">Secure identity verification</p>
+              <p className="text-sm font-semibold tracking-tight text-neutral-900">
+                SIMRS Biometrik
+              </p>
+              <p className="text-xs text-neutral-500">
+                Rekam Medis & Antrean Wajah Otomatis
+              </p>
             </div>
           </div>
-          <div className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm sm:flex">
-            <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            System ready
-          </div>
-        </header>
 
-        <div className="grid gap-8 py-10 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)] lg:items-center lg:gap-14 lg:py-16">
+          <nav
+            aria-label="Navigasi layanan"
+            className="flex items-center gap-1 rounded-full bg-neutral-100 p-1"
+          >
+            <button
+              type="button"
+              onClick={() => setActivePage('attendance')}
+              className={`rounded-full px-4 py-1.5 text-xs font-medium transition ${
+                activePage === 'attendance'
+                  ? 'bg-white text-neutral-900 shadow-sm'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              Pasien Lama
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivePage('register')}
+              className={`rounded-full px-4 py-1.5 text-xs font-medium transition ${
+                activePage === 'register'
+                  ? 'bg-white text-neutral-900 shadow-sm'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              + Pasien Baru
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      {/* Konten Utama */}
+      <main className="mx-auto max-w-6xl px-5 py-8 sm:px-8 sm:py-10">
+        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm font-bold uppercase tracking-[0.18em] text-teal-700">Daily check-in</p>
-            <h1 className="mt-4 max-w-xl text-4xl font-semibold leading-tight tracking-[-0.03em] text-slate-950 sm:text-5xl">
-              Hadir dengan satu pandangan.
+            <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 sm:text-3xl">
+              {activePage === 'attendance'
+                ? 'Scan Wajah Pasien Lama'
+                : 'Pendaftaran Pasien Baru'}
             </h1>
-            <p className="mt-5 max-w-lg text-base leading-7 text-slate-600">
-              Pastikan wajah terlihat jelas dan berada di area panduan. Kamera akan digunakan untuk proses verifikasi kehadiran.
+            <p className="mt-1 text-sm text-neutral-500">
+              {activePage === 'attendance'
+                ? 'Identifikasi wajah otomatis menampilkan riwayat berobat, alergi, dan mencetak nomor antrean poliklinik.'
+                : 'Rekam wajah dan data medis pasien baru. Form otomatis dikosongkan setelah tersimpan.'}
             </p>
           </div>
 
-          <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/75 p-3 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] backdrop-blur-sm sm:p-4">
-            <AttendanceCamera />
-          </div>
+          {activePage === 'attendance' ? (
+            <button
+              type="button"
+              onClick={() => setActivePage('register')}
+              className="rounded-full border border-neutral-200 bg-white px-4 py-2 text-xs font-medium text-neutral-700 transition hover:border-neutral-300 hover:bg-neutral-50"
+            >
+              Pasien belum terdaftar? Daftar baru →
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setActivePage('attendance')}
+              className="rounded-full border border-neutral-200 bg-white px-4 py-2 text-xs font-medium text-neutral-700 transition hover:border-neutral-300 hover:bg-neutral-50"
+            >
+              ← Kembali ke Scan Pasien Lama
+            </button>
+          )}
         </div>
 
-        <footer className="flex flex-col gap-2 border-t border-slate-200/80 py-5 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <span>Attendance workspace</span>
-          <span>Camera access is protected by your browser permissions.</span>
-        </footer>
-      </div>
-    </main>
+        {activePage === 'attendance' ? (
+          <AttendanceCamera />
+        ) : (
+          <FaceRegistrationPage
+            onGoToAttendance={() => setActivePage('attendance')}
+          />
+        )}
+      </main>
+    </div>
   );
 }
 

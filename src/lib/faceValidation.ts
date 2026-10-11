@@ -2,9 +2,24 @@ import type { NormalizedFace } from '@tensorflow-models/blazeface';
 
 export type FaceStatus = 'valid' | 'invalid_position' | 'no_face';
 
+export interface NormalizedPoint {
+  readonly xPct: number;
+  readonly yPct: number;
+}
+
+export interface FaceTrackingBox {
+  readonly leftPct: number;
+  readonly topPct: number;
+  readonly widthPct: number;
+  readonly heightPct: number;
+  readonly confidence: number;
+  readonly landmarks: readonly NormalizedPoint[];
+}
+
 export interface FaceAssessment {
   readonly status: FaceStatus;
   readonly message: string;
+  readonly trackingBox: FaceTrackingBox | null;
 }
 
 /** Dimensi intrinsik frame video (bukan ukuran elemen di layar). */
@@ -40,23 +55,46 @@ const GUIDE_HEIGHT_RATIO = 0.6;
 const GUIDE_TOLERANCE_RATIO = 0.12;
 
 export const FACE_ASSESSMENT = {
-  noFace: { status: 'no_face', message: 'Posisikan wajah di dalam kotak' },
+  noFace: {
+    status: 'no_face',
+    message: 'Posisikan wajah di dalam kotak',
+    trackingBox: null,
+  },
   detectorUnavailable: {
     status: 'no_face',
     message: 'Deteksi wajah tidak tersedia',
+    trackingBox: null,
   },
   calibrating: {
     status: 'invalid_position',
     message: 'Menyiapkan area panduan...',
+    trackingBox: null,
   },
-  tooFar: { status: 'invalid_position', message: 'Mendekatlah ke kamera' },
-  tooClose: { status: 'invalid_position', message: 'Jauhi kamera sedikit' },
+  tooFar: {
+    status: 'invalid_position',
+    message: 'Mendekatlah ke kamera',
+    trackingBox: null,
+  },
+  tooClose: {
+    status: 'invalid_position',
+    message: 'Jauhi kamera sedikit',
+    trackingBox: null,
+  },
   outOfGuide: {
     status: 'invalid_position',
     message: 'Posisikan wajah di dalam kotak',
+    trackingBox: null,
   },
-  eyesHidden: { status: 'invalid_position', message: 'Mata tidak terlihat' },
-  valid: { status: 'valid', message: 'Tahan posisi...' },
+  eyesHidden: {
+    status: 'invalid_position',
+    message: 'Mata tidak terlihat',
+    trackingBox: null,
+  },
+  valid: {
+    status: 'valid',
+    message: 'Tahan posisi...',
+    trackingBox: null,
+  },
 } as const satisfies Record<string, FaceAssessment>;
 
 /*
@@ -138,14 +176,42 @@ const getGuideGeometry = ({ width, height }: FrameSize) => {
   };
 };
 
+const clampPct = (val: number): number =>
+  Math.min(100, Math.max(0, Number.isFinite(val) ? val : 0));
+
+const buildTrackingBox = (
+  { bounds, landmarks, confidence }: DetectedFace,
+  frame: FrameSize,
+): FaceTrackingBox => {
+  const leftPct = clampPct((bounds.left / frame.width) * 100);
+  const topPct = clampPct((bounds.top / frame.height) * 100);
+  const rightPct = clampPct((bounds.right / frame.width) * 100);
+  const bottomPct = clampPct((bounds.bottom / frame.height) * 100);
+
+  return {
+    leftPct,
+    topPct,
+    widthPct: Math.max(8, rightPct - leftPct),
+    heightPct: Math.max(8, bottomPct - topPct),
+    confidence,
+    landmarks: landmarks
+      .filter((pt) => Number.isFinite(pt.x) && Number.isFinite(pt.y))
+      .map((pt) => ({
+        xPct: clampPct((pt.x / frame.width) * 100),
+        yPct: clampPct((pt.y / frame.height) * 100),
+      })),
+  };
+};
+
 const validateFacePosition = (
-  { bounds, landmarks }: DetectedFace,
+  detected: DetectedFace,
   frame: FrameSize,
 ): FaceAssessment => {
   if (!isUsableFrame(frame)) {
     return FACE_ASSESSMENT.calibrating;
   }
 
+  const { bounds, landmarks } = detected;
   const guide = getGuideGeometry(frame);
   const faceWidth = bounds.right - bounds.left;
   const faceHeight = bounds.bottom - bounds.top;
@@ -172,19 +238,21 @@ const validateFacePosition = (
     return FACE_ASSESSMENT.calibrating;
   }
 
+  const trackingBox = buildTrackingBox(detected, frame);
+
   if (areaRatio < MIN_FACE_AREA_RATIO) {
-    return FACE_ASSESSMENT.tooFar;
+    return { ...FACE_ASSESSMENT.tooFar, trackingBox };
   }
 
   if (areaRatio > MAX_FACE_AREA_RATIO) {
-    return FACE_ASSESSMENT.tooClose;
+    return { ...FACE_ASSESSMENT.tooClose, trackingBox };
   }
 
   if (
     !containsPoint(guide.allowed, center) ||
     !containsBounds(guide.allowed, bounds)
   ) {
-    return FACE_ASSESSMENT.outOfGuide;
+    return { ...FACE_ASSESSMENT.outOfGuide, trackingBox };
   }
 
   // Dua landmark pertama BlazeFace adalah mata kanan dan kiri.
@@ -192,7 +260,9 @@ const validateFacePosition = (
   const eyesAreVisible =
     eyes.length === 2 && eyes.every((eye) => containsPoint(guide.eyeZone, eye));
 
-  return eyesAreVisible ? FACE_ASSESSMENT.valid : FACE_ASSESSMENT.eyesHidden;
+  return eyesAreVisible
+    ? { ...FACE_ASSESSMENT.valid, trackingBox }
+    : { ...FACE_ASSESSMENT.eyesHidden, trackingBox };
 };
 
 /**

@@ -1,0 +1,207 @@
+{
+  "total_cases": 25,
+  "positive_cases": 20,
+  "negative_cases": 5,
+  "cases": [
+    {
+      "case_id": "TC-POS-01",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-001",
+      "full_name": "Aditya Pratama",
+      "image_path": "images/test_positive/MHS-2026-001_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-02",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-002",
+      "full_name": "Nabila Putri Maharani",
+      "image_path": "images/test_positive/MHS-2026-002_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-03",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-003",
+      "full_name": "Rizky Ramadhan",
+      "image_path": "images/test_positive/MHS-2026-003_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-04",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-004",
+      "full_name": "Aulia Rahmawati",
+      "image_path": "images/test_positive/MHS-2026-004_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-05",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-005",
+      "full_name": "Fajar Nugroho",
+      "image_path": "images/test_positive/MHS-2026-005_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-06",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-006",
+      "full_name": "Siti Nurhaliza",
+      "image_path": "images/test_positive/MHS-2026-006_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-07",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-007",
+      "full_name": "Dimas Wahyu Saputra",
+      "image_path": "images/test_positive/MHS-2026-007_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-08",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-008",
+      "full_name": "Intan Permatasari",
+      "image_path": "images/test_positive/MHS-2026-008_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-09",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-009",
+      "full_name": "Bagas Kurniawan",
+      "image_path": "images/test_positive/MHS-2026-009_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-10",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-010",
+      "full_name": "Dewi Anggraini",
+      "image_path": "images/test_positive/MHS-2026-010_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-11",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-011",
+      "full_name": "Ilham Maulana",
+      "image_path": "images/test_positive/MHS-2026-011_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-12",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-012",
+      "full_name": "Putri Ayu Lestari",
+      "image_path": "images/test_positive/MHS-2026-012_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-13",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-013",
+      "full_name": "Reza Pahlevi",
+      "image_path": "images/test_positive/MHS-2026-013_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-14",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-014",
+      "full_name": "Anisa Fitriani",
+      "image_path": "images/test_positive/MHS-2026-014_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-15",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-015",
+      "full_name": "Hendra Gunawan",
+      "image_path": "images/test_positive/MHS-2026-015_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-16",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-016",
+      "full_name": "Citra Kirana Dewi",
+      "image_path": "images/test_positive/MHS-2026-016_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-17",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-017",
+      "full_name": "Arif Budiman",
+      "image_path": "images/test_positive/MHS-2026-017_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-18",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-018",
+      "full_name": "Larasati Kusuma",
+      "image_path": "images/test_positive/MHS-2026-018_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-19",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-019",
+      "full_name": "Yoga Pratama Putra",
+      "image_path": "images/test_positive/MHS-2026-019_query.jpg"
+    },
+    {
+      "case_id": "TC-POS-20",
+      "type": "POSITIVE",
+      "expected_recognized": true,
+      "expected_person_id": "MHS-2026-020",
+      "full_name": "Rania Safitri",
+      "image_path": "images/test_positive/MHS-2026-020_query.jpg"
+    },
+    {
+      "case_id": "TC-NEG-01",
+      "type": "NEGATIVE",
+      "expected_recognized": false,
+      "expected_person_id": null,
+      "full_name": "Pasien Belum Terdaftar 1",
+      "image_path": "images/test_negative/UNREG-001.jpg"
+    },
+    {
+      "case_id": "TC-NEG-02",
+      "type": "NEGATIVE",
+      "expected_recognized": false,
+      "expected_person_id": null,
+      "full_name": "Pasien Belum Terdaftar 2",
+      "image_path": "images/test_negative/UNREG-002.jpg"
+    },
+    {
+      "case_id": "TC-NEG-03",
+      "type": "NEGATIVE",
+      "expected_recognized": false,
+      "expected_person_id": null,
+      "full_name": "Pasien Belum Terdaftar 3",
+      "image_path": "images/test_negative/UNREG-003.jpg"
+    },
+    {
+      "case_id": "TC-NEG-04",
+      "type": "NEGATIVE",
+      "expected_recognized": false,
+      "expected_person_id": null,
+      "full_name": "Pasien Belum Terdaftar 4",
+      "image_path": "images/test_negative/UNREG-004.jpg"
+    },
+    {
+      "case_id": "TC-NEG-05",
+      "type": "NEGATIVE",
+      "expected_recognized": false,
+      "expected_person_id": null,
+      "full_name": "Pasien Belum Terdaftar 5",
+      "image_path": "images/test_negative/UNREG-005.jpg"
+    }
+  ]
+}
