@@ -11,6 +11,12 @@ export interface MedicalHistoryItem {
 export interface QueueTicket {
   readonly ticketId: string;
   readonly queueNumber: string;
+  readonly queueSequence: number;
+  readonly currentServingNumber: string;
+  readonly currentServingSequence: number;
+  readonly latestQueueNumber: string;
+  readonly patientsAhead: number;
+  readonly estimatedWaitMinutes: number;
   readonly noRm: string;
   readonly fullName: string;
   readonly gender: string;
@@ -122,9 +128,46 @@ const parseQueueTicket = (raw: unknown): QueueTicket | undefined => {
   if (typeof t.queueNumber !== 'string') {
     return undefined;
   }
+  const parts = t.queueNumber.split('-');
+  const prefix = parts[0] || 'PL';
+  const parsedSeq = Number.parseInt(parts[1] ?? '1', 10);
+  const queueSequence =
+    typeof t.queueSequence === 'number'
+      ? t.queueSequence
+      : Number.isFinite(parsedSeq)
+        ? parsedSeq
+        : 1;
+  const fallbackServingSeq = Math.max(1, queueSequence - 3);
+  const currentServingSequence =
+    typeof t.currentServingSequence === 'number'
+      ? t.currentServingSequence
+      : fallbackServingSeq;
+  const currentServingNumber =
+    typeof t.currentServingNumber === 'string'
+      ? t.currentServingNumber
+      : `${prefix}-${String(currentServingSequence).padStart(3, '0')}`;
+  const latestQueueNumber =
+    typeof t.latestQueueNumber === 'string'
+      ? t.latestQueueNumber
+      : t.queueNumber;
+  const patientsAhead =
+    typeof t.patientsAhead === 'number'
+      ? t.patientsAhead
+      : Math.max(0, queueSequence - currentServingSequence);
+  const estimatedWaitMinutes =
+    typeof t.estimatedWaitMinutes === 'number'
+      ? t.estimatedWaitMinutes
+      : patientsAhead * 8;
+
   return {
     ticketId: typeof t.ticketId === 'string' ? t.ticketId : '-',
     queueNumber: t.queueNumber,
+    queueSequence,
+    currentServingNumber,
+    currentServingSequence,
+    latestQueueNumber,
+    patientsAhead,
+    estimatedWaitMinutes,
     noRm: typeof t.noRm === 'string' ? t.noRm : '-',
     fullName: typeof t.fullName === 'string' ? t.fullName : '-',
     gender: typeof t.gender === 'string' ? t.gender : '-',

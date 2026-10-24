@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  font-family: 'Aptos', 'Segoe UI', sans-serif;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   color: #0f172a;
   background: #f8fafc;
   font-synthesis: none;
@@ -17,4 +17,46 @@
 body {
   margin: 0;
   min-width: 320px;
+  background-color: #f8fafc;
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Print styles specifically for Queue Ticket */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-queue-ticket,
+  #printable-queue-ticket * {
+    visibility: visible;
+  }
+  #printable-queue-ticket {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 80mm;
+    margin: 0 auto;
+    padding: 12px;
+    background: white !important;
+    color: black !important;
+    border: 1px dashed #000;
+  }
+  .no-print {
+    display: none !important;
+  }
 }

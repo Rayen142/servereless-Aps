@@ -74,7 +74,75 @@ POLIKLINIK_CONFIG: dict[str, dict[str, str]] = {
 
 _rekognition_client = None
 _dynamodb_resource = None
-_queue_counter: dict[str, int] = {}
+
+DEFAULT_INITIAL_QUEUES: dict[str, dict[str, int]] = {
+    "PD": {"serving": 2, "issued": 5},
+    "UM": {"serving": 4, "issued": 7},
+    "JT": {"serving": 1, "issued": 3},
+    "PR": {"serving": 2, "issued": 4},
+    "SR": {"serving": 1, "issued": 3},
+    "MT": {"serving": 3, "issued": 5},
+    "GG": {"serving": 2, "issued": 4},
+    "TH": {"serving": 1, "issued": 3},
+    "KK": {"serving": 2, "issued": 4},
+    "OR": {"serving": 1, "issued": 2},
+}
+
+_queue_counter: dict[str, int] = {
+    prefix: vals["issued"] for prefix, vals in DEFAULT_INITIAL_QUEUES.items()
+}
+_serving_counter: dict[str, int] = {
+    prefix: vals["serving"] for prefix, vals in DEFAULT_INITIAL_QUEUES.items()
+}
+MINUTES_PER_PATIENT = 8
+
+
+def get_poli_queue_snapshot(poli_name: str) -> dict[str, Any]:
+    poli_info = POLIKLINIK_CONFIG.get(
+        poli_name,
+        {
+            "prefix": "PL",
+            "dokter": "dr. Sinta Maharani",
+            "room": "Lantai 1 • Ruang 101",
+        },
+    )
+    prefix = poli_info["prefix"]
+    issued_seq = _queue_counter.get(prefix, 3)
+    serving_seq = _serving_counter.get(prefix, 1)
+    if serving_seq > issued_seq:
+        serving_seq = issued_seq
+        _serving_counter[prefix] = serving_seq
+
+    total_waiting = max(0, issued_seq - serving_seq)
+    return {
+        "poliklinik": poli_name,
+        "prefix": prefix,
+        "dokter": poli_info["dokter"],
+        "room": poli_info["room"],
+        "currentServingSequence": serving_seq,
+        "currentServingNumber": f"{prefix}-{serving_seq:03d}",
+        "latestQueueSequence": issued_seq,
+        "latestQueueNumber": f"{prefix}-{issued_seq:03d}",
+        "totalWaiting": total_waiting,
+        "estimatedWaitMinutes": total_waiting * MINUTES_PER_PATIENT,
+    }
+
+
+def get_all_queues_status() -> list[dict[str, Any]]:
+    return [get_poli_queue_snapshot(poli) for poli in POLIKLINIK_CONFIG]
+
+
+def advance_poli_queue(poli_name: str) -> dict[str, Any]:
+    poli_info = POLIKLINIK_CONFIG.get(
+        poli_name, POLIKLINIK_CONFIG["Poli Penyakit Dalam"]
+    )
+    prefix = poli_info["prefix"]
+    issued_seq = _queue_counter.get(prefix, 3)
+    serving_seq = _serving_counter.get(prefix, 1)
+    if serving_seq < issued_seq:
+        serving_seq += 1
+        _serving_counter[prefix] = serving_seq
+    return get_poli_queue_snapshot(poli_name)
 
 
 def _json_response(
@@ -181,9 +249,17 @@ def _generate_queue_ticket(
         },
     )
     prefix = poli_info["prefix"]
-    _queue_counter[prefix] = _queue_counter.get(prefix, 0) + 1
+    _queue_counter[prefix] = _queue_counter.get(prefix, 3) + 1
     seq = _queue_counter[prefix]
+    serving_seq = _serving_counter.get(prefix, 1)
+    if serving_seq > seq:
+        serving_seq = seq
+        _serving_counter[prefix] = serving_seq
+
     queue_number = f"{prefix}-{seq:03d}"
+    current_serving_number = f"{prefix}-{serving_seq:03d}"
+    patients_ahead = max(0, seq - serving_seq)
+    estimated_wait_minutes = patients_ahead * MINUTES_PER_PATIENT
 
     allergies = str(patient.get("allergies") or "Tidak Ada Alergi")
     has_allergy = (
@@ -194,6 +270,12 @@ def _generate_queue_ticket(
     return {
         "ticketId": f"TKT-{uuid.uuid4().hex[:8].upper()}",
         "queueNumber": queue_number,
+        "queueSequence": seq,
+        "currentServingNumber": current_serving_number,
+        "currentServingSequence": serving_seq,
+        "latestQueueNumber": queue_number,
+        "patientsAhead": patients_ahead,
+        "estimatedWaitMinutes": estimated_wait_minutes,
         "noRm": patient.get("noRm") or patient.get("personId"),
         "fullName": patient.get("fullName"),
         "gender": patient.get("gender"),
@@ -203,7 +285,11 @@ def _generate_queue_ticket(
         "room": poli_info["room"],
         "allergies": allergies,
         "hasAllergyAlert": has_allergy,
-        "status": "MENUNGGU PANGGILAN POLI",
+        "status": (
+            "GILIRAN ANDA SEKARANG"
+            if patients_ahead == 0
+            else "MENUNGGU PANGGILAN POLI"
+        ),
         "issuedAt": now_iso,
     }
 
@@ -371,6 +457,19 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         path = str(event.get("path") or "")
         action = str(payload.get("action") or "").lower()
+        if path.endswith("/queues/advance") or action == "advance_queue":
+            poli_name = str(payload.get("poliklinik") or "Poli Penyakit Dalam").strip()
+            updated_queue = advance_poli_queue(poli_name)
+            return _json_response(
+                200,
+                {
+                    "success": True,
+                    "status": "QUEUE_ADVANCED",
+                    "queue": updated_queue,
+                    "queues": get_all_queues_status(),
+                },
+            )
+
         if path.endswith("/enroll") or action == "enroll":
             enrolled = _enroll_face(payload, collection_id)
             return _json_response(

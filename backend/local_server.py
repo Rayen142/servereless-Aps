@@ -391,6 +391,17 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         clean_path = self.path.split("?")[0].rstrip("/")
+        if clean_path == "/v1/attendance/queues":
+            queues = handler.get_all_queues_status()
+            self._send_lambda_response(
+                {
+                    "statusCode": 200,
+                    "headers": handler.CORS_HEADERS,
+                    "body": json.dumps({"count": len(queues), "queues": queues}),
+                }
+            )
+            return
+
         if clean_path == "/v1/attendance/logs":
             logs = []
             if ATTENDANCE_LOG_PATH.exists():
