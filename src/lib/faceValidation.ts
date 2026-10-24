@@ -1,10 +1,23 @@
 import type { NormalizedFace } from '@tensorflow-models/blazeface';
 
 export type FaceStatus = 'valid' | 'invalid_position' | 'no_face';
+export type LivenessStatus = 'idle' | 'checking' | 'verified' | 'spoof_warning';
 
 export interface NormalizedPoint {
   readonly xPct: number;
   readonly yPct: number;
+}
+
+export interface FaceGeometryMetrics {
+  /** Rasio posisi horizontal hidung di antara kedua mata (indikator rotasi 3D yaw). */
+  readonly noseYawRatio: number;
+  /** Rasio jarak vertikal mata ke mulut terhadap tinggi wajah (indikator pitch/ekspresi). */
+  readonly eyeMouthPitchRatio: number;
+  /** Jarak antar-mata relatif terhadap lebar wajah. */
+  readonly interocularRatio: number;
+  /** Titik pusat wajah ternormalisasi (0..1). */
+  readonly centerNormX: number;
+  readonly centerNormY: number;
 }
 
 export interface FaceTrackingBox {
@@ -14,6 +27,7 @@ export interface FaceTrackingBox {
   readonly heightPct: number;
   readonly confidence: number;
   readonly landmarks: readonly NormalizedPoint[];
+  readonly geometry: FaceGeometryMetrics;
 }
 
 export interface FaceAssessment {
@@ -57,7 +71,7 @@ const GUIDE_TOLERANCE_RATIO = 0.12;
 export const FACE_ASSESSMENT = {
   noFace: {
     status: 'no_face',
-    message: 'Posisikan wajah di dalam kotak',
+    message: 'Posisikan wajah di dalam area kamera',
     trackingBox: null,
   },
   detectorUnavailable: {
@@ -67,12 +81,12 @@ export const FACE_ASSESSMENT = {
   },
   calibrating: {
     status: 'invalid_position',
-    message: 'Menyiapkan area panduan...',
+    message: 'Menyiapkan area panduan…',
     trackingBox: null,
   },
   tooFar: {
     status: 'invalid_position',
-    message: 'Mendekatlah ke kamera',
+    message: 'Mendekatlah sedikit ke kamera',
     trackingBox: null,
   },
   tooClose: {
@@ -82,27 +96,21 @@ export const FACE_ASSESSMENT = {
   },
   outOfGuide: {
     status: 'invalid_position',
-    message: 'Posisikan wajah di dalam kotak',
+    message: 'Tengahkan wajah di area pindai',
     trackingBox: null,
   },
   eyesHidden: {
     status: 'invalid_position',
-    message: 'Mata tidak terlihat',
+    message: 'Pastikan kedua mata terlihat jelas',
     trackingBox: null,
   },
   valid: {
     status: 'valid',
-    message: 'Tahan posisi...',
+    message: 'Tahan posisi sebentar…',
     trackingBox: null,
   },
 } as const satisfies Record<string, FaceAssessment>;
 
-/*
- * Dengan `returnTensors = false`, BlazeFace mengembalikan array biasa
- * (`probability` berupa array satu elemen), meski typings juga mengizinkan tensor.
- * Pembaca di bawah menerima `unknown` dan menghasilkan NaN untuk bentuk tak dikenal,
- * sehingga validasi akhirnya jatuh ke status "calibrating" alih-alih melempar error.
- */
 const readNumbers = (value: unknown): readonly number[] => {
   if (typeof value === 'number') {
     return [value];
@@ -179,6 +187,50 @@ const getGuideGeometry = ({ width, height }: FrameSize) => {
 const clampPct = (val: number): number =>
   Math.min(100, Math.max(0, Number.isFinite(val) ? val : 0));
 
+const computeGeometryMetrics = (
+  bounds: Bounds,
+  landmarks: readonly Point[],
+  frame: FrameSize,
+): FaceGeometryMetrics => {
+  const faceW = Math.max(1, bounds.right - bounds.left);
+  const faceH = Math.max(1, bounds.bottom - bounds.top);
+  const rightEye = landmarks[0];
+  const leftEye = landmarks[1];
+  const nose = landmarks[2];
+  const mouth = landmarks[3];
+
+  let noseYawRatio = 0.5;
+  let eyeMouthPitchRatio = 0.35;
+  let interocularRatio = 0.4;
+
+  if (rightEye && leftEye) {
+    const eyeDx = leftEye.x - rightEye.x;
+    const eyeDy = leftEye.y - rightEye.y;
+    const eyeDist = Math.hypot(eyeDx, eyeDy);
+    interocularRatio = eyeDist / faceW;
+
+    if (nose && Math.abs(eyeDx) > 1) {
+      noseYawRatio = (nose.x - rightEye.x) / eyeDx;
+    }
+    if (mouth) {
+      const eyeMidY = (rightEye.y + leftEye.y) / 2;
+      eyeMouthPitchRatio = (mouth.y - eyeMidY) / faceH;
+    }
+  }
+
+  return {
+    noseYawRatio: Number.isFinite(noseYawRatio) ? noseYawRatio : 0.5,
+    eyeMouthPitchRatio: Number.isFinite(eyeMouthPitchRatio)
+      ? eyeMouthPitchRatio
+      : 0.35,
+    interocularRatio: Number.isFinite(interocularRatio)
+      ? interocularRatio
+      : 0.4,
+    centerNormX: (bounds.left + faceW / 2) / Math.max(1, frame.width),
+    centerNormY: (bounds.top + faceH / 2) / Math.max(1, frame.height),
+  };
+};
+
 const buildTrackingBox = (
   { bounds, landmarks, confidence }: DetectedFace,
   frame: FrameSize,
@@ -200,6 +252,7 @@ const buildTrackingBox = (
         xPct: clampPct((pt.x / frame.width) * 100),
         yPct: clampPct((pt.y / frame.height) * 100),
       })),
+    geometry: computeGeometryMetrics(bounds, landmarks, frame),
   };
 };
 

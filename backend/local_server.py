@@ -1,10 +1,12 @@
 """Local Development API Server untuk Sistem Pengenalan Wajah & Antrean Pasien Rumah Sakit (SIMRS).
 
 Menyediakan endpoint:
-  POST http://localhost:8000/v1/attendance/verify  (Scan wajah pasien lama -> Riwayat Medis, Alergi, & Tiket Antrean Otomatis)
-  POST http://localhost:8000/v1/attendance/enroll  (Scan wajah daftar pasien baru -> Simpan Rekam Medis & Antrean)
-  GET  http://localhost:8000/v1/attendance/faces   (Daftar pasien terdaftar di database RS)
-  GET  http://localhost:8000/v1/attendance/logs    (Riwayat tiket antrean & kunjungan pasien)
+  POST http://localhost:8000/v1/attendance/verify          (Scan wajah pasien lama -> Riwayat Medis, Alergi, & Tiket Antrean Otomatis)
+  POST http://localhost:8000/v1/attendance/enroll          (Scan wajah daftar pasien baru -> Simpan Rekam Medis & Antrean)
+  POST http://localhost:8000/v1/attendance/medical-record  (Tambah catatan pemeriksaan dokter ke riwayat medis pasien)
+  GET  http://localhost:8000/v1/attendance/queues          (Status antrean poliklinik real-time)
+  GET  http://localhost:8000/v1/attendance/faces           (Daftar pasien terdaftar di database RS)
+  GET  http://localhost:8000/v1/attendance/logs            (Riwayat tiket antrean & kunjungan pasien)
 """
 
 from __future__ import annotations
@@ -76,6 +78,9 @@ def _load_face_cascade() -> cv2.CascadeClassifier:
 
 
 CASCADE = _load_face_cascade()
+CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+ORB_DETECTOR = cv2.ORB_create(nfeatures=120, scaleFactor=1.2, nlevels=4)
+BF_MATCHER = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
 
 def _load_subjects_map() -> dict[str, dict[str, Any]]:
@@ -174,6 +179,31 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def _append_medical_history_to_metadata(
+    person_id: str, no_rm: str, new_entry: dict[str, str]
+) -> list[dict[str, Any]]:
+    if not METADATA_JSON_PATH.exists():
+        return [new_entry]
+    try:
+        data = json.loads(METADATA_JSON_PATH.read_text(encoding="utf-8"))
+        subjects: list[dict[str, Any]] = data.get("subjects", [])
+        updated_history: list[dict[str, Any]] = [new_entry]
+        for subj in subjects:
+            if subj.get("person_id") == person_id or subj.get("no_rm") == no_rm:
+                history = list(subj.get("medical_history") or [])
+                history.insert(0, new_entry)
+                subj["medical_history"] = history
+                updated_history = history
+                break
+        data["subjects"] = subjects
+        METADATA_JSON_PATH.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return updated_history
+    except Exception:
+        return [new_entry]
+
+
 def _extract_face_roi(gray_img: np.ndarray) -> np.ndarray:
     faces = CASCADE.detectMultiScale(gray_img, 1.1, 4, minSize=(60, 60))
     if len(faces) > 0:
@@ -185,10 +215,82 @@ def _extract_face_roi(gray_img: np.ndarray) -> np.ndarray:
         r = min(h, w) // 4
         roi = gray_img[cy - r : cy + r, cx - r : cx + r]
     resized = cv2.resize(roi, (128, 128))
-    return cv2.equalizeHist(resized)
+    return CLAHE.apply(resized)
+
+
+def _compute_spatial_lbph_descriptor(face_128: np.ndarray) -> np.ndarray:
+    """Ekstraksi fitur tekstur mikro wajah menggunakan Spatial Local Binary Patterns (LBPH) 4x4 grid."""
+    padded = np.pad(face_128, 1, mode="edge").astype(np.int16)
+    center = padded[1:-1, 1:-1]
+    lbp = (
+        ((padded[0:-2, 0:-2] >= center).astype(np.uint8) << 7)
+        | ((padded[0:-2, 1:-1] >= center).astype(np.uint8) << 6)
+        | ((padded[0:-2, 2:] >= center).astype(np.uint8) << 5)
+        | ((padded[1:-1, 2:] >= center).astype(np.uint8) << 4)
+        | ((padded[2:, 2:] >= center).astype(np.uint8) << 3)
+        | ((padded[2:, 1:-1] >= center).astype(np.uint8) << 2)
+        | ((padded[2:, 0:-2] >= center).astype(np.uint8) << 1)
+        | (padded[1:-1, 0:-2] >= center).astype(np.uint8)
+    )
+    hists: list[np.ndarray] = []
+    cell = 32  # 4x4 grid pada citra 128x128
+    for gy in range(0, 128, cell):
+        for gx in range(0, 128, cell):
+            block = lbp[gy : gy + cell, gx : gx + cell]
+            hist, _ = np.histogram(block, bins=32, range=(0, 256))
+            hists.append(hist.astype(np.float32))
+    vec = np.concatenate(hists)
+    norm = float(np.linalg.norm(vec))
+    return vec / norm if norm > 1e-6 else vec
+
+
+def _compute_spatial_hog_descriptor(face_128: np.ndarray) -> np.ndarray:
+    """Ekstraksi fitur struktur & kontur anatomi wajah menggunakan Spatial Gradient Orientation (HOG)."""
+    smoothed = cv2.GaussianBlur(face_128, (3, 3), 0)
+    gx = cv2.Sobel(smoothed, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(smoothed, cv2.CV_32F, 0, 1, ksize=3)
+    mag, ang = cv2.cartToPolar(gx, gy, angleInDegrees=True)
+    ang = np.mod(ang, 180.0)
+    bins = np.clip((ang / 22.5).astype(np.int32), 0, 7)
+
+    cell = 16  # 8x8 grid pada citra 128x128
+    feats: list[np.ndarray] = []
+    for cy in range(0, 128, cell):
+        for cx in range(0, 128, cell):
+            b_cell = bins[cy : cy + cell, cx : cx + cell].ravel()
+            m_cell = mag[cy : cy + cell, cx : cx + cell].ravel()
+            hist = np.bincount(b_cell, weights=m_cell, minlength=8).astype(np.float32)
+            feats.append(hist)
+    vec = np.concatenate(feats)
+    norm = float(np.linalg.norm(vec))
+    return vec / norm if norm > 1e-6 else vec
+
+
+def _compute_orb_similarity(face_a: np.ndarray, face_b: np.ndarray) -> float:
+    """Pencocokan titik fitur invarian rotasi & skala menggunakan ORB + Hamming Distance."""
+    try:
+        _, des_a = ORB_DETECTOR.detectAndCompute(face_a, None)
+        _, des_b = ORB_DETECTOR.detectAndCompute(face_b, None)
+        if des_a is None or des_b is None or len(des_a) == 0 or len(des_b) == 0:
+            return 0.5
+        matches = BF_MATCHER.match(des_a, des_b)
+        if not matches:
+            return 0.0
+        good_matches = [m for m in matches if m.distance < 64]
+        denom = max(1, min(len(des_a), len(des_b)))
+        return min(1.0, len(good_matches) / (denom * 0.45))
+    except Exception:
+        return 0.5
 
 
 def _compute_face_similarity(img_a_bytes: bytes, img_b_bytes: bytes) -> float:
+    """Menghitung skor kemiripan biometrik wajah (0-100) dengan Ensemble Multi-Feature:
+    1. CLAHE Adaptive Illumination Normalization
+    2. Spatial LBPH (Local Binary Patterns Histogram) Texture Descriptor
+    3. Spatial HOG (Histogram of Oriented Gradients) Structural Descriptor
+    4. ORB Keypoint Descriptor Matching
+    5. Multi-ROI Normalized Cross-Correlation
+    """
     arr_a = np.frombuffer(img_a_bytes, np.uint8)
     arr_b = np.frombuffer(img_b_bytes, np.uint8)
     img_a = cv2.imdecode(arr_a, cv2.IMREAD_GRAYSCALE)
@@ -196,6 +298,7 @@ def _compute_face_similarity(img_a_bytes: bytes, img_b_bytes: bytes) -> float:
     if img_a is None or img_b is None:
         return 0.0
 
+    # 1. Center Crop ROI + CLAHE
     h_a, w_a = img_a.shape[:2]
     h_b, w_b = img_b.shape[:2]
     cy_a, cx_a = h_a // 2, w_a // 2
@@ -203,22 +306,49 @@ def _compute_face_similarity(img_a_bytes: bytes, img_b_bytes: bytes) -> float:
     r_a = min(h_a, w_a) // 4
     r_b = min(h_b, w_b) // 4
 
-    roi_a = cv2.equalizeHist(
+    center_a = CLAHE.apply(
         cv2.resize(img_a[cy_a - r_a : cy_a + r_a, cx_a - r_a : cx_a + r_a], (128, 128))
     )
-    roi_b = cv2.equalizeHist(
+    center_b = CLAHE.apply(
         cv2.resize(img_b[cy_b - r_b : cy_b + r_b, cx_b - r_b : cx_b + r_b], (128, 128))
     )
 
-    corr_center = float(cv2.matchTemplate(roi_a, roi_b, cv2.TM_CCOEFF_NORMED)[0][0])
-
+    # 2. Haar-Cascade Aligned Face ROI + CLAHE
     face_a = _extract_face_roi(img_a)
     face_b = _extract_face_roi(img_b)
-    corr_face = float(cv2.matchTemplate(face_a, face_b, cv2.TM_CCOEFF_NORMED)[0][0])
 
-    corr = max(corr_center, corr_face)
-    score = max(0.0, min(100.0, (corr + 0.15) * 95.0))
-    return round(score, 2)
+    # 3. Template Cross-Correlation
+    corr_center = float(cv2.matchTemplate(center_a, center_b, cv2.TM_CCOEFF_NORMED)[0][0])
+    corr_face = float(cv2.matchTemplate(face_a, face_b, cv2.TM_CCOEFF_NORMED)[0][0])
+    corr_best = max(corr_center, corr_face)
+    ncc_score = max(0.0, min(1.0, (corr_best + 0.15) * 0.95))
+
+    # Pilih pasangan ROI terbaik (center vs cascade) untuk ekstraksi deskriptor fitur
+    roi_primary_a, roi_primary_b = (
+        (face_a, face_b) if corr_face >= corr_center else (center_a, center_b)
+    )
+
+    # 4. Spatial LBPH Cosine Similarity
+    lbp_a = _compute_spatial_lbph_descriptor(roi_primary_a)
+    lbp_b = _compute_spatial_lbph_descriptor(roi_primary_b)
+    lbp_cos = float(np.dot(lbp_a, lbp_b))
+
+    # 5. Spatial HOG Cosine Similarity
+    hog_a = _compute_spatial_hog_descriptor(roi_primary_a)
+    hog_b = _compute_spatial_hog_descriptor(roi_primary_b)
+    hog_cos = float(np.dot(hog_a, hog_b))
+
+    # 6. ORB Feature Matching
+    orb_sim = _compute_orb_similarity(roi_primary_a, roi_primary_b)
+
+    # Ensemble Fusion dengan penekanan diskriminatif antara subjek yang sama vs berbeda
+    feature_blend = 0.45 * ncc_score + 0.25 * hog_cos + 0.20 * lbp_cos + 0.10 * orb_sim
+    # Kalibrasi kurva agar pasangan negatif tetap rendah dan pasangan positif akurat
+    legacy_score = max(0.0, min(100.0, (corr_best + 0.15) * 95.0))
+    ensemble_score = max(0.0, min(100.0, feature_blend * 102.0))
+
+    final_score = 0.65 * legacy_score + 0.35 * ensemble_score if corr_best > 0.55 else min(legacy_score, ensemble_score)
+    return round(float(final_score), 2)
 
 
 LAST_CUSTOM_ENROLLED_ID: str | None = None
@@ -458,6 +588,8 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
                         "service": "simrs-biometric-local-backend",
                         "verify_endpoint": "POST /v1/attendance/verify",
                         "enroll_endpoint": "POST /v1/attendance/enroll",
+                        "medical_record_endpoint": "POST /v1/attendance/medical-record",
+                        "queues_endpoint": "GET /v1/attendance/queues",
                         "faces_endpoint": "GET /v1/attendance/faces",
                         "logs_endpoint": "GET /v1/attendance/logs",
                     }
@@ -482,12 +614,25 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
         if result.get("statusCode") == 200:
             try:
                 resp_payload = json.loads(result.get("body", "{}"))
-                if resp_payload.get("status") == "ENROLLED":
+                status = resp_payload.get("status")
+                if status == "ENROLLED":
                     _save_patient_metadata(resp_payload)
                     print(
                         f"[SIMRS-PASIEN-BARU] No.RM: {resp_payload.get('noRm')} | "
                         f"Nama: {resp_payload.get('fullName')} | "
                         f"Alergi: {resp_payload.get('allergies')}"
+                    )
+                elif status == "MEDICAL_RECORD_ADDED":
+                    updated_history = _append_medical_history_to_metadata(
+                        resp_payload.get("personId", ""),
+                        resp_payload.get("noRm", ""),
+                        resp_payload.get("record", {}),
+                    )
+                    resp_payload["medicalHistory"] = updated_history
+                    result["body"] = json.dumps(resp_payload)
+                    print(
+                        f"[SIMRS-REKAM-MEDIS] No.RM: {resp_payload.get('noRm')} | "
+                        f"Diagnosis: {resp_payload.get('record', {}).get('diagnosis')}"
                     )
             except Exception as err:
                 print(f"[WARN] Gagal menyimpan rekam medis lokal: {err}")

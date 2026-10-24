@@ -94,7 +94,45 @@ _queue_counter: dict[str, int] = {
 _serving_counter: dict[str, int] = {
     prefix: vals["serving"] for prefix, vals in DEFAULT_INITIAL_QUEUES.items()
 }
+_serving_status: dict[str, str] = {
+    prefix: "DIPANGGIL" for prefix in DEFAULT_INITIAL_QUEUES
+}
+_queue_patients: dict[str, dict[int, dict[str, str]]] = {
+    "PD": {
+        2: {"fullName": "Aditya Pratama", "noRm": "RM-2026-001"},
+        3: {"fullName": "Rizky Ramadhan", "noRm": "RM-2026-003"},
+        4: {"fullName": "Hendra Gunawan", "noRm": "RM-2026-007"},
+        5: {"fullName": "Siti Nurhaliza", "noRm": "RM-2026-010"},
+    },
+    "UM": {
+        4: {"fullName": "Budi Santoso", "noRm": "RM-2026-004"},
+        5: {"fullName": "Dewi Lestari", "noRm": "RM-2026-008"},
+        6: {"fullName": "Fajar Nugroho", "noRm": "RM-2026-012"},
+        7: {"fullName": "Rina Kartika", "noRm": "RM-2026-015"},
+    },
+    "JT": {
+        1: {"fullName": "Dimas Saputra", "noRm": "RM-2026-005"},
+        2: {"fullName": "Agus Salim", "noRm": "RM-2026-011"},
+        3: {"fullName": "Ratna Sari", "noRm": "RM-2026-014"},
+    },
+    "PR": {
+        2: {"fullName": "Nabila Putri Maharani", "noRm": "RM-2026-002"},
+        3: {"fullName": "Eko Prasetyo", "noRm": "RM-2026-009"},
+        4: {"fullName": "Maya Indriani", "noRm": "RM-2026-016"},
+    },
+}
+_custom_medical_records: dict[str, list[dict[str, str]]] = {}
 MINUTES_PER_PATIENT = 8
+
+
+def _get_patient_for_queue(prefix: str, seq: int) -> dict[str, str]:
+    poli_map = _queue_patients.get(prefix, {})
+    if seq in poli_map:
+        return poli_map[seq]
+    return {
+        "fullName": f"Pasien {prefix}-{seq:03d}",
+        "noRm": f"RM-2026-{seq:03d}",
+    }
 
 
 def get_poli_queue_snapshot(poli_name: str) -> dict[str, Any]:
@@ -114,6 +152,11 @@ def get_poli_queue_snapshot(poli_name: str) -> dict[str, Any]:
         _serving_counter[prefix] = serving_seq
 
     total_waiting = max(0, issued_seq - serving_seq)
+    serving_status = _serving_status.get(prefix, "DIPANGGIL")
+    current_patient = _get_patient_for_queue(prefix, serving_seq)
+    next_seq = serving_seq + 1 if serving_seq < issued_seq else None
+    next_patient = _get_patient_for_queue(prefix, next_seq) if next_seq else None
+
     return {
         "poliklinik": poli_name,
         "prefix": prefix,
@@ -121,6 +164,11 @@ def get_poli_queue_snapshot(poli_name: str) -> dict[str, Any]:
         "room": poli_info["room"],
         "currentServingSequence": serving_seq,
         "currentServingNumber": f"{prefix}-{serving_seq:03d}",
+        "servingStatus": serving_status,
+        "currentPatientName": current_patient["fullName"],
+        "currentPatientNoRm": current_patient["noRm"],
+        "nextQueueNumber": f"{prefix}-{next_seq:03d}" if next_seq else None,
+        "nextPatientName": next_patient["fullName"] if next_patient else None,
         "latestQueueSequence": issued_seq,
         "latestQueueNumber": f"{prefix}-{issued_seq:03d}",
         "totalWaiting": total_waiting,
@@ -132,16 +180,27 @@ def get_all_queues_status() -> list[dict[str, Any]]:
     return [get_poli_queue_snapshot(poli) for poli in POLIKLINIK_CONFIG]
 
 
-def advance_poli_queue(poli_name: str) -> dict[str, Any]:
+def advance_poli_queue(
+    poli_name: str, queue_action: str = "call_next"
+) -> dict[str, Any]:
     poli_info = POLIKLINIK_CONFIG.get(
         poli_name, POLIKLINIK_CONFIG["Poli Penyakit Dalam"]
     )
     prefix = poli_info["prefix"]
     issued_seq = _queue_counter.get(prefix, 3)
     serving_seq = _serving_counter.get(prefix, 1)
-    if serving_seq < issued_seq:
-        serving_seq += 1
-        _serving_counter[prefix] = serving_seq
+
+    normalized_action = queue_action.strip().lower()
+    if normalized_action == "complete":
+        _serving_status[prefix] = "SELESAI"
+    elif normalized_action == "recall":
+        _serving_status[prefix] = "DIPANGGIL"
+    else:
+        if serving_seq < issued_seq:
+            serving_seq += 1
+            _serving_counter[prefix] = serving_seq
+        _serving_status[prefix] = "DIPANGGIL"
+
     return get_poli_queue_snapshot(poli_name)
 
 
@@ -256,6 +315,13 @@ def _generate_queue_ticket(
         serving_seq = seq
         _serving_counter[prefix] = serving_seq
 
+    full_name = str(patient.get("fullName") or f"Pasien {prefix}-{seq:03d}")
+    no_rm = str(patient.get("noRm") or patient.get("personId") or f"RM-2026-{seq:03d}")
+    _queue_patients.setdefault(prefix, {})[seq] = {
+        "fullName": full_name,
+        "noRm": no_rm,
+    }
+
     queue_number = f"{prefix}-{seq:03d}"
     current_serving_number = f"{prefix}-{serving_seq:03d}"
     patients_ahead = max(0, seq - serving_seq)
@@ -276,8 +342,8 @@ def _generate_queue_ticket(
         "latestQueueNumber": queue_number,
         "patientsAhead": patients_ahead,
         "estimatedWaitMinutes": estimated_wait_minutes,
-        "noRm": patient.get("noRm") or patient.get("personId"),
-        "fullName": patient.get("fullName"),
+        "noRm": no_rm,
+        "fullName": full_name,
         "gender": patient.get("gender"),
         "insurance": patient.get("insurance") or "BPJS Kesehatan",
         "poliklinik": poli_name,
@@ -286,9 +352,9 @@ def _generate_queue_ticket(
         "allergies": allergies,
         "hasAllergyAlert": has_allergy,
         "status": (
-            "GILIRAN ANDA SEKARANG"
+            "DIPANGGIL"
             if patients_ahead == 0
-            else "MENUNGGU PANGGILAN POLI"
+            else "MENUNGGU"
         ),
         "issuedAt": now_iso,
     }
@@ -305,6 +371,17 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
     poliklinik = face.get("Poliklinik") or "Poli Penyakit Dalam"
     poli_info = POLIKLINIK_CONFIG.get(poliklinik, {})
 
+    base_history = list(face.get("MedicalHistory") or [])
+    extra_history = _custom_medical_records.get(person_id, []) + _custom_medical_records.get(no_rm, [])
+    # Deduplicate while preserving order
+    seen_keys: set[str] = set()
+    merged_history: list[dict[str, Any]] = []
+    for item in extra_history + base_history:
+        key = f"{item.get('date')}|{item.get('diagnosis')}|{item.get('treatment')}"
+        if key not in seen_keys:
+            seen_keys.add(key)
+            merged_history.append(item)
+
     return {
         "personId": person_id,
         "noRm": no_rm,
@@ -320,7 +397,7 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
         "poliklinik": poliklinik,
         "dokter": face.get("Dokter")
         or poli_info.get("dokter", "dr. Hendra Wijaya, Sp.PD"),
-        "medicalHistory": face.get("MedicalHistory") or [],
+        "medicalHistory": merged_history,
         "similarity": similarity,
     }
 
@@ -355,6 +432,44 @@ def _record_attendance(
         "timestamp": timestamp,
         "queueTicket": queue_ticket,
         **identity,
+    }
+
+
+def _add_medical_record(payload: dict[str, Any]) -> dict[str, Any]:
+    person_id = str(payload.get("personId") or payload.get("noRm") or "").strip()
+    no_rm = str(payload.get("noRm") or person_id).strip()
+    if not person_id:
+        raise ValueError("Identitas pasien (personId / No. RM) wajib diisi")
+
+    diagnosis = str(payload.get("diagnosis") or "").strip()
+    treatment = str(payload.get("treatment") or "").strip()
+    if not diagnosis:
+        raise ValueError("Diagnosis pemeriksaan dokter wajib diisi")
+    if not treatment:
+        raise ValueError("Tindakan / resep obat wajib diisi")
+
+    poliklinik = str(payload.get("poliklinik") or "Poli Umum").strip()
+    poli_info = POLIKLINIK_CONFIG.get(poliklinik, POLIKLINIK_CONFIG["Poli Umum"])
+    doctor = str(payload.get("doctor") or poli_info["dokter"]).strip()
+    date_str = str(
+        payload.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    ).strip()
+
+    record = {
+        "date": date_str,
+        "poliklinik": poliklinik,
+        "doctor": doctor,
+        "diagnosis": diagnosis,
+        "treatment": treatment,
+    }
+    _custom_medical_records.setdefault(person_id, []).insert(0, record)
+    if no_rm and no_rm != person_id:
+        _custom_medical_records.setdefault(no_rm, []).insert(0, record)
+
+    return {
+        "personId": person_id,
+        "noRm": no_rm,
+        "record": record,
     }
 
 
@@ -459,7 +574,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         action = str(payload.get("action") or "").lower()
         if path.endswith("/queues/advance") or action == "advance_queue":
             poli_name = str(payload.get("poliklinik") or "Poli Penyakit Dalam").strip()
-            updated_queue = advance_poli_queue(poli_name)
+            queue_action = str(payload.get("queueAction") or "call_next").strip()
+            updated_queue = advance_poli_queue(poli_name, queue_action=queue_action)
             return _json_response(
                 200,
                 {
@@ -467,6 +583,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "status": "QUEUE_ADVANCED",
                     "queue": updated_queue,
                     "queues": get_all_queues_status(),
+                },
+            )
+
+        if path.endswith("/medical-record") or action == "add_medical_record":
+            added = _add_medical_record(payload)
+            return _json_response(
+                200,
+                {
+                    "success": True,
+                    "status": "MEDICAL_RECORD_ADDED",
+                    "message": "Catatan pemeriksaan dokter berhasil ditambahkan ke rekam medis pasien.",
+                    **added,
                 },
             )
 

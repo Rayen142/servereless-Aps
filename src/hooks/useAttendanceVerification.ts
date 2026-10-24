@@ -84,6 +84,10 @@ export interface UseAttendanceVerificationResult {
   readonly identifyLive: (image: string) => Promise<void>;
   readonly clearLiveIdentity: () => void;
   readonly enrollFace: (input: EnrollFaceInput) => Promise<EnrollFaceResult>;
+  readonly appendMedicalHistory: (
+    item: MedicalHistoryItem,
+    fullHistory?: readonly MedicalHistoryItem[],
+  ) => void;
   /** Membatalkan permintaan yang berjalan dan menghapus umpan balik. */
   readonly reset: () => void;
 }
@@ -180,7 +184,7 @@ const parseQueueTicket = (raw: unknown): QueueTicket | undefined => {
       typeof t.allergies === 'string' ? t.allergies : 'Tidak Ada Alergi',
     hasAllergyAlert: t.hasAllergyAlert === true,
     status:
-      typeof t.status === 'string' ? t.status : 'MENUNGGU PANGGILAN POLI',
+      typeof t.status === 'string' ? t.status : 'MENUNGGU',
     issuedAt: typeof t.issuedAt === 'string' ? t.issuedAt : '',
   };
 };
@@ -427,6 +431,38 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
     [],
   );
 
+  const appendMedicalHistory = useCallback(
+    (
+      item: MedicalHistoryItem,
+      fullHistory?: readonly MedicalHistoryItem[],
+    ) => {
+      setLiveIdentity((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          medicalHistory:
+            fullHistory && fullHistory.length > 0
+              ? fullHistory
+              : [item, ...prev.medicalHistory],
+        };
+      });
+      setFeedback((prev) => {
+        if (!prev?.person) return prev;
+        return {
+          ...prev,
+          person: {
+            ...prev.person,
+            medicalHistory:
+              fullHistory && fullHistory.length > 0
+                ? fullHistory
+                : [item, ...prev.person.medicalHistory],
+          },
+        };
+      });
+    },
+    [],
+  );
+
   const reset = useCallback(() => {
     abortInFlight();
     setIsSubmitting(false);
@@ -443,6 +479,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
     identifyLive,
     clearLiveIdentity,
     enrollFace,
+    appendMedicalHistory,
     reset,
   };
 }

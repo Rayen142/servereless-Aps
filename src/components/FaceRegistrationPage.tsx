@@ -21,8 +21,6 @@ import {
   CheckIcon,
   RefreshIcon,
   UploadIcon,
-  UserPlusIcon,
-  UsersIcon,
 } from './icons';
 
 interface FaceRegistrationPageProps {
@@ -56,7 +54,7 @@ const EMPTY_FORM: FormState = {
 };
 
 const inputClass =
-  'h-10 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-medium text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-500/10';
+  'h-9 w-full rounded-xl border border-neutral-200 bg-white px-3 text-xs text-neutral-900 outline-none transition placeholder:text-neutral-400 focus:border-neutral-900';
 
 function Field({
   label,
@@ -71,9 +69,9 @@ function Field({
 }) {
   return (
     <label className={`block ${className}`}>
-      <span className="mb-1.5 flex items-baseline justify-between text-xs font-semibold text-slate-700">
+      <span className="mb-1 flex items-baseline justify-between text-xs font-medium text-neutral-600">
         {label}
-        {hint && <span className="font-normal text-slate-400 text-[11px]">{hint}</span>}
+        {hint && <span className="font-normal text-neutral-400 text-[11px]">{hint}</span>}
       </span>
       {children}
     </label>
@@ -166,7 +164,8 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
       poliklinik: form.poliklinik,
       allergies: form.allergies.trim() || 'Tidak Ada Alergi',
       chronicConditions: form.chronicConditions.trim() || 'Tidak Ada',
-      medicalHistoryNotes: form.complaint.trim() || 'Pendaftaran Pasien Baru & Pemeriksaan Awal',
+      medicalHistoryNotes:
+        form.complaint.trim() || 'Pendaftaran Pasien Baru & Pemeriksaan Awal',
       image: photo,
     });
     setIsSaving(false);
@@ -176,7 +175,6 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
       return;
     }
 
-    // Berhasil: simpan feedback, reset form untuk pasien berikutnya
     setSaved(result.person ?? null);
     setForm(EMPTY_FORM);
     resetPhoto();
@@ -185,19 +183,17 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
   };
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] items-start">
-      {/* Kolom Perekaman Wajah */}
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-start">
+      {/* Kolom Kiri: Kamera */}
       <section className="space-y-4">
-        <div className="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-card">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-              <CameraIcon width={16} height={16} className="text-teal-600" />
-              Perekaman Biometrik Wajah
-            </h3>
+        <div className="rounded-2xl border border-neutral-200/80 bg-white p-4 space-y-3.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-neutral-900">
+              Foto Wajah Pasien
+            </span>
             {patientCount !== null && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
-                <UsersIcon width={12} height={12} />
-                {patientCount} Pasien di Database
+              <span className="text-xs text-neutral-400">
+                {patientCount} pasien terdaftar
               </span>
             )}
           </div>
@@ -207,19 +203,22 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
             detection={detection}
             capturedImage={photo}
             isFlashing={frame.isFlashing}
-            faceLabel={detection.trackingBox ? form.fullName.trim() || 'Pasien Baru' : null}
+            faceLabel={
+              detection.trackingBox
+                ? form.fullName.trim() || 'Pasien Baru'
+                : null
+            }
           />
 
-          {/* Action buttons under camera */}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
             <div className="flex items-center gap-2">
               {photo ? (
                 <button
                   type="button"
                   onClick={resetPhoto}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[0.98]"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
                 >
-                  <RefreshIcon width={14} height={14} />
+                  <RefreshIcon width={13} height={13} />
                   Ambil Ulang
                 </button>
               ) : (
@@ -227,16 +226,16 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
                   type="button"
                   onClick={() => frame.capture(camera.videoRef.current)}
                   disabled={camera.status !== 'ready'}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-900 px-4 text-xs font-bold text-white transition hover:bg-slate-800 active:scale-[0.98] disabled:opacity-40 shadow-sm"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
                 >
-                  <CameraIcon width={14} height={14} />
-                  Ambil Foto Pasien
+                  <CameraIcon width={13} height={13} />
+                  Ambil Foto
                 </button>
               )}
 
-              <label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[0.98]">
-                <UploadIcon width={14} height={14} />
-                Unggah File
+              <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50">
+                <UploadIcon width={13} height={13} />
+                Unggah
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -247,61 +246,37 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
               </label>
             </div>
 
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  photo
-                    ? 'bg-emerald-500'
-                    : detection.trackingBox
-                      ? 'bg-teal-500'
-                      : 'bg-slate-300'
-                }`}
-              />
-              <span>
-                {photo
-                  ? 'Foto Siap Disimpan'
-                  : detection.trackingBox
-                    ? 'Wajah Pasien Terdeteksi'
-                    : 'Posisikan Wajah ke Kamera'}
-              </span>
-            </div>
+            <span className="text-xs text-neutral-500">
+              {photo
+                ? 'Foto siap disimpan'
+                : detection.trackingBox
+                  ? 'Wajah terdeteksi'
+                  : 'Hadapkan wajah'}
+            </span>
           </div>
         </div>
 
-        {/* Notifikasi Pendaftaran Berhasil */}
         {saved && (
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4 shadow-sm transition-all">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
-                <CheckIcon width={18} height={18} />
-              </div>
-              <div className="flex-1 text-xs">
-                <p className="font-bold text-emerald-950 text-sm">
-                  Pendaftaran Berhasil Disimpan
-                </p>
-                <p className="mt-0.5 text-emerald-800 font-medium">
-                  {saved.fullName} (No. RM:{' '}
-                  <span className="font-mono font-bold">{saved.noRm}</span>)
-                </p>
-                <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                  <span className="rounded bg-emerald-200/70 px-2 py-0.5 font-mono text-[11px] font-bold text-emerald-950">
-                    Nomor Antrean: {saved.queueTicket?.queueNumber ?? '-'}
-                  </span>
-                  {saved.queueTicket && (
-                    <span className="rounded bg-white/80 px-2 py-0.5 font-mono text-[11px] font-semibold text-emerald-900 border border-emerald-200">
-                      Sedang Dilayani: {saved.queueTicket.currentServingNumber}
-                    </span>
-                  )}
-                  <span className="text-emerald-800 font-semibold">
-                    · Menunggu {saved.queueTicket?.patientsAhead ?? 0} pasien lagi (
-                    ± {saved.queueTicket?.estimatedWaitMinutes ?? 0} menit)
-                  </span>
+          <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/70 p-4 text-xs">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white">
+                  <CheckIcon width={12} height={12} />
+                </span>
+                <div>
+                  <p className="font-semibold text-emerald-950">
+                    Pasien berhasil didaftarkan
+                  </p>
+                  <p className="mt-0.5 text-emerald-800">
+                    {saved.fullName} (<span className="font-mono">{saved.noRm}</span>) ·
+                    Antrean <strong className="font-mono">{saved.queueTicket?.queueNumber ?? '-'}</strong>
+                  </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setSaved(null)}
-                className="text-xs font-semibold text-emerald-700 hover:text-emerald-900"
+                className="text-emerald-700 hover:text-emerald-950"
               >
                 ✕
               </button>
@@ -310,158 +285,137 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
         )}
       </section>
 
-      {/* Kolom Formulir Rekam Medis */}
-      <section className="rounded-2xl border border-slate-200/90 bg-white p-6 shadow-card">
-        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-6">
-          <div className="border-b border-slate-100 pb-4">
-            <h2 className="text-base font-bold text-slate-900">
-              Formulir Rekam Medis & Admisi Pasien
-            </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Lengkapi informasi identitas dan anamnesis awal pasien untuk pendaftaran database SIMRS.
-            </p>
-          </div>
+      {/* Kolom Kanan: Formulir Pendaftaran Minimalis */}
+      <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">
+        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+          <p className="text-xs font-semibold text-neutral-900">
+            Data Identitas & Medis Pasien
+          </p>
 
-          {/* Bagian 1: Data Identitas Pasien */}
-          <div className="space-y-3.5">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-teal-700">
-              1. Identitas Pasien
-            </p>
+          <Field label="Nama Lengkap *">
+            <input
+              ref={nameInputRef}
+              value={form.fullName}
+              onChange={(e) => update('fullName', e.target.value)}
+              placeholder="Nama sesuai KTP"
+              className={inputClass}
+              required
+            />
+          </Field>
 
-            <Field label="Nama Lengkap Pasien *">
-              <input
-                ref={nameInputRef}
-                value={form.fullName}
-                onChange={(e) => update('fullName', e.target.value)}
-                placeholder="Contoh: Budi Santoso"
-                className={inputClass}
-                required
-              />
-            </Field>
-
+          <div className="grid grid-cols-3 gap-2.5">
             <Field label="Jenis Kelamin">
-              <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
-                {(['Laki-laki', 'Perempuan'] as const).map((g) => (
-                  <button
-                    key={g}
-                    type="button"
-                    onClick={() => update('gender', g)}
-                    className={`h-8 rounded-lg text-xs font-semibold transition ${
-                      form.gender === g
-                        ? 'bg-white text-slate-900 shadow-sm'
-                        : 'text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </Field>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="NIK (Nomor Induk Kependudukan)" hint="16 digit">
-                <input
-                  value={form.nik}
-                  onChange={(e) => update('nik', e.target.value.replace(/\D/g, '').slice(0, 16))}
-                  inputMode="numeric"
-                  placeholder="3273xxxxxxxxxxxx"
-                  className={inputClass}
-                />
-              </Field>
-
-              <Field label="Usia Pasien" hint="dalam tahun">
-                <input
-                  value={form.age}
-                  onChange={(e) => update('age', e.target.value.replace(/\D/g, '').slice(0, 3))}
-                  inputMode="numeric"
-                  placeholder="Contoh: 28"
-                  className={inputClass}
-                />
-              </Field>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Golongan Darah">
-                <select
-                  value={form.bloodType}
-                  onChange={(e) => update('bloodType', e.target.value)}
-                  className={inputClass}
-                >
-                  {['O+', 'A+', 'B+', 'AB+', 'O-', 'A-', 'B-', 'AB-'].map((b) => (
-                    <option key={b}>{b}</option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Jaminan Kesehatan">
-                <select
-                  value={form.insurance}
-                  onChange={(e) => update('insurance', e.target.value)}
-                  className={inputClass}
-                >
-                  <option>BPJS Kesehatan</option>
-                  <option>Asuransi Swasta</option>
-                  <option>Umum (Mandiri)</option>
-                </select>
-              </Field>
-            </div>
-          </div>
-
-          {/* Bagian 2: Poliklinik & Skrining Klinis */}
-          <div className="space-y-3.5 border-t border-slate-100 pt-5">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-teal-700">
-              2. Poliklinik & Skrining Klinis
-            </p>
-
-            <Field label="Poliklinik Tujuan Pertama">
               <select
-                value={form.poliklinik}
-                onChange={(e) => update('poliklinik', e.target.value)}
+                value={form.gender}
+                onChange={(e) =>
+                  update('gender', e.target.value as 'Laki-laki' | 'Perempuan')
+                }
                 className={inputClass}
               >
-                {POLIKLINIK_LIST.map((p) => (
-                  <option key={p}>{p}</option>
-                ))}
+                <option value="Laki-laki">Laki-laki</option>
+                <option value="Perempuan">Perempuan</option>
               </select>
             </Field>
 
-            <Field label="Riwayat Alergi Obat / Makanan" hint="kosongkan jika tidak ada">
+            <Field label="Usia (th)">
+              <input
+                value={form.age}
+                onChange={(e) =>
+                  update('age', e.target.value.replace(/\D/g, '').slice(0, 3))
+                }
+                inputMode="numeric"
+                placeholder="30"
+                className={inputClass}
+              />
+            </Field>
+
+            <Field label="Gol. Darah">
+              <select
+                value={form.bloodType}
+                onChange={(e) => update('bloodType', e.target.value)}
+                className={inputClass}
+              >
+                {['O+', 'A+', 'B+', 'AB+', 'O-', 'A-', 'B-', 'AB-'].map((b) => (
+                  <option key={b}>{b}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <Field label="NIK" hint="16 digit">
+              <input
+                value={form.nik}
+                onChange={(e) =>
+                  update('nik', e.target.value.replace(/\D/g, '').slice(0, 16))
+                }
+                inputMode="numeric"
+                placeholder="3273xxxxxxxxxxxx"
+                className={inputClass}
+              />
+            </Field>
+
+            <Field label="Jaminan">
+              <select
+                value={form.insurance}
+                onChange={(e) => update('insurance', e.target.value)}
+                className={inputClass}
+              >
+                <option>BPJS Kesehatan</option>
+                <option>Asuransi Swasta</option>
+                <option>Umum (Mandiri)</option>
+              </select>
+            </Field>
+          </div>
+
+          <Field label="Poliklinik Tujuan">
+            <select
+              value={form.poliklinik}
+              onChange={(e) => update('poliklinik', e.target.value)}
+              className={inputClass}
+            >
+              {POLIKLINIK_LIST.map((p) => (
+                <option key={p}>{p}</option>
+              ))}
+            </select>
+          </Field>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <Field label="Alergi Obat / Makanan" hint="opsional">
               <input
                 value={form.allergies}
                 onChange={(e) => update('allergies', e.target.value)}
-                placeholder="Contoh: Penisilin, Amoxicillin, Udang"
+                placeholder="Kosongkan jika tidak ada"
                 className={inputClass}
               />
             </Field>
 
-            <Field label="Penyakit Penyerta / Kronis" hint="opsional">
+            <Field label="Penyakit Penyerta" hint="opsional">
               <input
                 value={form.chronicConditions}
                 onChange={(e) => update('chronicConditions', e.target.value)}
-                placeholder="Contoh: Hipertensi, Asma, Diabetes"
+                placeholder="Hipertensi, Asma, dll."
                 className={inputClass}
-              />
-            </Field>
-
-            <Field label="Keluhan Utama Saat Ini" hint="alasan berobat">
-              <textarea
-                value={form.complaint}
-                onChange={(e) => update('complaint', e.target.value)}
-                rows={2}
-                placeholder="Contoh: Demam tinggi 3 hari, batuk kering dan sakit tenggorokan"
-                className={`${inputClass} h-auto resize-none py-2.5`}
               />
             </Field>
           </div>
 
+          <Field label="Keluhan Utama / Catatan Awal">
+            <input
+              value={form.complaint}
+              onChange={(e) => update('complaint', e.target.value)}
+              placeholder="Contoh: Pemeriksaan tekanan darah & keluhan pusing"
+              className={inputClass}
+            />
+          </Field>
+
           {error && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-700">
+            <p className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600">
               {error}
-            </div>
+            </p>
           )}
 
-          {/* Form Actions */}
-          <div className="flex items-center justify-between border-t border-slate-100 pt-5">
+          <div className="flex items-center justify-between border-t border-neutral-100 pt-3.5">
             <button
               type="button"
               onClick={() => {
@@ -469,37 +423,27 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
                 setError(null);
                 resetPhoto();
               }}
-              className="text-xs font-semibold text-slate-500 transition hover:text-slate-800"
+              className="text-xs text-neutral-500 hover:text-neutral-800"
             >
-              Reset Formulir
+              Reset
             </button>
 
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2">
               {onGoToAttendance && (
                 <button
                   type="button"
                   onClick={onGoToAttendance}
-                  className="h-10 rounded-xl px-4 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
+                  className="h-8 rounded-full px-3.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100"
                 >
-                  Kembali
+                  Batal
                 </button>
               )}
               <button
                 type="submit"
                 disabled={isSaving}
-                className="inline-flex h-10 items-center gap-2 rounded-xl bg-teal-700 px-5 text-xs font-bold text-white transition hover:bg-teal-800 active:scale-[0.98] disabled:opacity-50 shadow-sm"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-50"
               >
-                {isSaving ? (
-                  <>
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                    Menyimpan Pasien…
-                  </>
-                ) : (
-                  <>
-                    <UserPlusIcon width={15} height={15} />
-                    Simpan Pasien Baru
-                  </>
-                )}
+                {isSaving ? 'Menyimpan…' : 'Simpan & Ambil Antrean'}
               </button>
             </div>
           </div>

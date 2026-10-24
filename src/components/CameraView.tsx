@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { FaceDetectionResult } from '../hooks/useFaceDetection';
 import type { UseWebCameraResult } from '../hooks/useWebCamera';
-import { RefreshIcon, ShieldCheckIcon, AlertIcon } from './icons';
+import { AlertIcon, RefreshIcon, ShieldCheckIcon } from './icons';
 
 interface CameraViewProps {
   readonly camera: UseWebCameraResult;
@@ -17,7 +17,7 @@ interface CameraViewProps {
   readonly children?: ReactNode;
 }
 
-/** Tampilan kamera biometrik berstandar medis dengan HUD tracking presisi tinggi. */
+/** Tampilan kamera minimalis dengan indikator Liveness Detection (Anti-Spoofing). */
 function CameraView({
   camera,
   detection,
@@ -31,9 +31,10 @@ function CameraView({
   const isReady = camera.status === 'ready';
   const box = detection.trackingBox;
   const isValid = detection.faceStatus === 'valid';
+  const liveness = detection.livenessStatus;
 
   return (
-    <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl border border-slate-700/60 bg-slate-950 shadow-xl">
+    <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl bg-neutral-950 ring-1 ring-black/5">
       {capturedImage ? (
         <img
           src={capturedImage}
@@ -53,46 +54,60 @@ function CameraView({
         />
       )}
 
-      {/* Biometric Viewport Corner Guides */}
-      <div className="pointer-events-none absolute inset-4 border border-white/5">
-        <div className="absolute -left-0.5 -top-0.5 h-4 w-4 border-l-2 border-t-2 border-teal-400/70" />
-        <div className="absolute -right-0.5 -top-0.5 h-4 w-4 border-r-2 border-t-2 border-teal-400/70" />
-        <div className="absolute -bottom-0.5 -left-0.5 h-4 w-4 border-b-2 border-l-2 border-teal-400/70" />
-        <div className="absolute -bottom-0.5 -right-0.5 h-4 w-4 border-b-2 border-r-2 border-teal-400/70" />
-      </div>
-
-      {/* Top HUD Status Bar */}
-      <div className="pointer-events-none absolute left-4 right-4 top-4 flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2 rounded-full border border-slate-700/60 bg-slate-900/80 px-3 py-1 text-[11px] font-medium text-slate-300 backdrop-blur-md">
+      {/* Top Minimal Status & Liveness Bar */}
+      <div className="pointer-events-none absolute left-3.5 right-3.5 top-3.5 flex items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-2 rounded-full bg-black/55 px-3 py-1 text-[11px] font-medium text-white/90 backdrop-blur-md">
           <span
-            className={`h-2 w-2 rounded-full ${
+            className={`h-1.5 w-1.5 rounded-full ${
               capturedImage
                 ? 'bg-amber-400'
                 : isReady
-                  ? 'animate-pulse bg-emerald-400'
+                  ? 'bg-emerald-400'
                   : 'bg-rose-400'
             }`}
           />
-          <span className="font-mono tracking-wider">
-            {capturedImage ? 'FRAME CAPTURED' : isReady ? 'AI SCANNER ONLINE' : 'STANDBY'}
+          <span>
+            {capturedImage
+              ? 'Foto Tersimpan'
+              : isReady
+                ? 'Kamera Aktif'
+                : 'Menyiapkan…'}
           </span>
         </div>
 
-        {isReady && !capturedImage && (
-          <div className="rounded-full border border-slate-700/60 bg-slate-900/80 px-2.5 py-1 font-mono text-[10px] text-slate-400 backdrop-blur-md">
-            720p · 30 FPS
+        {/* Liveness Anti-Spoofing Indicator */}
+        {!capturedImage && isReady && box && (
+          <div
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium backdrop-blur-md transition ${
+              liveness === 'verified'
+                ? 'bg-emerald-950/75 text-emerald-300 ring-1 ring-emerald-400/30'
+                : liveness === 'spoof_warning'
+                  ? 'bg-rose-950/80 text-rose-200 ring-1 ring-rose-400/40'
+                  : 'bg-black/55 text-neutral-300'
+            }`}
+          >
+            <ShieldCheckIcon width={13} height={13} />
+            <span>
+              {liveness === 'verified'
+                ? `Liveness Live · ${detection.livenessScore.toFixed(0)}%`
+                : liveness === 'spoof_warning'
+                  ? 'Anti-Spoofing: Gerakkan Wajah'
+                  : 'Cek Liveness 3D…'}
+            </span>
           </div>
         )}
       </div>
 
-      {/* Kotak tracking wajah (video di-mirror, koordinat X dicerminkan) */}
+      {/* Kotak tracking wajah minimalis */}
       {!capturedImage && isReady && box && (
         <div className="pointer-events-none absolute inset-0">
           <div
-            className={`absolute rounded-xl border-2 transition-all duration-100 ease-out ${
-              isValid
-                ? 'border-emerald-400 shadow-[0_0_15px_rgba(52,211,153,0.3)]'
-                : 'border-cyan-400/80 shadow-[0_0_10px_rgba(34,211,238,0.2)]'
+            className={`absolute rounded-2xl border transition-all duration-100 ease-out ${
+              liveness === 'spoof_warning'
+                ? 'border-rose-400/90'
+                : isValid
+                  ? 'border-emerald-400/90 shadow-[0_0_0_1px_rgba(52,211,153,0.25)]'
+                  : 'border-white/60'
             }`}
             style={{
               left: `${100 - box.leftPct - box.widthPct}%`,
@@ -101,30 +116,20 @@ function CameraView({
               height: `${box.heightPct}%`,
             }}
           >
-            {/* Corner Markers on Tracking Box */}
-            <div className="absolute -left-1 -top-1 h-2 w-2 rounded-sm bg-white" />
-            <div className="absolute -right-1 -top-1 h-2 w-2 rounded-sm bg-white" />
-            <div className="absolute -bottom-1 -left-1 h-2 w-2 rounded-sm bg-white" />
-            <div className="absolute -bottom-1 -right-1 h-2 w-2 rounded-sm bg-white" />
-
-            {/* Floating identity card */}
+            {/* Floating identity tag */}
             {faceLabel && (
-              <div className="absolute -top-3 left-1/2 flex -translate-x-1/2 -translate-y-full flex-col items-center">
-                <div className="flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-900 shadow-md backdrop-blur-md">
-                  <ShieldCheckIcon width={14} height={14} className="text-teal-600" />
+              <div className="absolute -top-2.5 left-1/2 flex -translate-x-1/2 -translate-y-full flex-col items-center">
+                <div className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-white/95 px-3 py-1 text-xs font-medium text-neutral-900 shadow-sm backdrop-blur-md">
                   <span>{faceLabel}</span>
                   {faceAlert && (
-                    <span
-                      title="Pasien memiliki catatan alergi"
-                      className="ml-1 inline-flex items-center gap-0.5 rounded bg-rose-100 px-1 py-0.5 text-[10px] font-bold text-rose-700"
-                    >
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
                       <AlertIcon width={10} height={10} />
                       Alergi
                     </span>
                   )}
                 </div>
                 {faceSubLabel && (
-                  <span className="mt-1 rounded bg-slate-900/80 px-2 py-0.5 font-mono text-[10px] font-medium text-slate-300 backdrop-blur-sm">
+                  <span className="mt-1 rounded-full bg-black/65 px-2.5 py-0.5 font-mono text-[10px] text-neutral-200 backdrop-blur-sm">
                     {faceSubLabel}
                   </span>
                 )}
@@ -136,9 +141,9 @@ function CameraView({
 
       {/* Progress Tahan Posisi Wajah */}
       {!capturedImage && isReady && isValid && detection.holdProgress > 0 && (
-        <div className="absolute inset-x-0 bottom-0 h-1.5 bg-slate-900/60 backdrop-blur-sm">
+        <div className="absolute inset-x-0 bottom-0 h-1 bg-white/15">
           <div
-            className="h-full bg-gradient-to-r from-teal-400 to-emerald-400 transition-[width] duration-75"
+            className="h-full bg-emerald-400 transition-[width] duration-75"
             style={{ width: `${detection.holdProgress * 100}%` }}
           />
         </div>
@@ -146,31 +151,31 @@ function CameraView({
 
       {/* State Kamera Standby / Error */}
       {!capturedImage && !isReady && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center bg-slate-950/90 backdrop-blur-sm">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 px-8 text-center">
           {camera.status === 'error' ? (
-            <div className="max-w-xs space-y-2">
-              <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                <AlertIcon width={20} height={20} />
+            <div className="max-w-xs space-y-2.5">
+              <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-rose-500/10 text-rose-400">
+                <AlertIcon width={18} height={18} />
               </div>
-              <p className="text-sm font-semibold text-white">Kamera Tidak Dapat Diakses</p>
-              <p className="text-xs leading-relaxed text-slate-400">
+              <p className="text-sm font-medium text-white">
+                Kamera tidak dapat diakses
+              </p>
+              <p className="text-xs leading-relaxed text-neutral-400">
                 {camera.error.message}
               </p>
               <button
                 type="button"
                 onClick={camera.retry}
-                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 shadow-sm"
+                className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-white/10 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-white/20"
               >
-                <RefreshIcon width={14} height={14} />
-                Hubungkan Ulang Kamera
+                <RefreshIcon width={13} height={13} />
+                Coba lagi
               </button>
             </div>
           ) : (
-            <div className="space-y-3">
-              <span className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-teal-400" />
-              <p className="text-xs font-medium text-slate-300 tracking-wide">
-                Menginisialisasi Kamera Biometrik…
-              </p>
+            <div className="space-y-2.5">
+              <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-neutral-700 border-t-white" />
+              <p className="text-xs text-neutral-400">Menyiapkan kamera…</p>
             </div>
           )}
         </div>
@@ -178,9 +183,8 @@ function CameraView({
 
       {children}
 
-      {/* Flash Effect on capture */}
       {isFlashing && (
-        <div className="pointer-events-none absolute inset-0 bg-white/80 transition-opacity duration-200" />
+        <div className="pointer-events-none absolute inset-0 bg-white/75 transition-opacity duration-200" />
       )}
     </div>
   );

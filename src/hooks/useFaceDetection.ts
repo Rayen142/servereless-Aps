@@ -10,6 +10,7 @@ import {
   type FaceAssessment,
   type FaceStatus,
   type FaceTrackingBox,
+  type LivenessStatus,
 } from '../lib/faceValidation';
 import { isVideoFrameReady } from '../lib/video';
 import { useBlazeFaceModel, type ModelStatus } from './useBlazeFaceModel';
@@ -20,7 +21,7 @@ export interface UseFaceDetectionOptions {
   readonly videoRef: RefObject<HTMLVideoElement | null>;
   /** Loop deteksi hanya berjalan saat `true` (kamera siap dan belum ada tangkapan). */
   readonly enabled: boolean;
-  /** Dipanggil saat wajah valid bertahan selama durasi auto-capture penuh. */
+  /** Dipanggil saat wajah valid + liveness terverifikasi bertahan selama durasi auto-capture penuh. */
   readonly onHoldComplete: () => void;
 }
 
@@ -33,16 +34,23 @@ export interface FaceDetectionResult {
   readonly holdProgress: number;
   /** Koordinat kotak tracking wajah dan titik landmark dalam persentase (0..100). */
   readonly trackingBox: FaceTrackingBox | null;
+  /** Status Liveness Detection (Anti-Spoofing). */
+  readonly livenessStatus: LivenessStatus;
+  /** Skor keaslian wajah hidup (0..100). */
+  readonly livenessScore: number;
 }
 
 const DETECTION_INTERVAL_MS = 100;
 const AUTO_CAPTURE_HOLD_MS = 1500;
+const PATCH_SIZE = 32;
 
 interface AnalysisState {
   readonly faceStatus: FaceStatus;
   readonly guidance: string;
   readonly holdProgress: number;
   readonly trackingBox: FaceTrackingBox | null;
+  readonly livenessStatus: LivenessStatus;
+  readonly livenessScore: number;
   readonly hasScanFailed: boolean;
 }
 
@@ -52,6 +60,8 @@ type AnalysisAction =
       readonly type: 'frame_assessed';
       readonly assessment: FaceAssessment;
       readonly holdProgress: number;
+      readonly livenessStatus: LivenessStatus;
+      readonly livenessScore: number;
     }
   | { readonly type: 'scan_failed' };
 
@@ -60,6 +70,8 @@ const INITIAL_ANALYSIS: AnalysisState = {
   guidance: FACE_ASSESSMENT.noFace.message,
   holdProgress: 0,
   trackingBox: null,
+  livenessStatus: 'idle',
+  livenessScore: 0,
   hasScanFailed: false,
 };
 
@@ -69,6 +81,8 @@ const IDLE_RESULT: FaceDetectionResult = {
   guidance: INITIAL_ANALYSIS.guidance,
   holdProgress: 0,
   trackingBox: null,
+  livenessStatus: 'idle',
+  livenessScore: 0,
 };
 
 const UNAVAILABLE_RESULT: FaceDetectionResult = {
@@ -77,6 +91,8 @@ const UNAVAILABLE_RESULT: FaceDetectionResult = {
   guidance: FACE_ASSESSMENT.detectorUnavailable.message,
   holdProgress: 0,
   trackingBox: null,
+  livenessStatus: 'idle',
+  livenessScore: 0,
 };
 
 const analysisReducer = (
@@ -91,29 +107,182 @@ const analysisReducer = (
       return { ...INITIAL_ANALYSIS, hasScanFailed: true };
 
     case 'frame_assessed': {
-      const { assessment } = action;
-      // Progres hanya bermakna untuk posisi valid; selain itu paksa kembali ke 0.
+      const { assessment, livenessStatus, livenessScore } = action;
       const holdProgress =
         assessment.status === 'valid' ? action.holdProgress : 0;
 
+      const guidance =
+        assessment.status === 'valid' && livenessStatus === 'spoof_warning'
+          ? 'Gerakkan kepala sedikit untuk verifikasi keaslian wajah'
+          : assessment.message;
+
       if (
         state.faceStatus === assessment.status &&
-        state.guidance === assessment.message &&
+        state.guidance === guidance &&
         state.holdProgress === holdProgress &&
-        state.trackingBox === assessment.trackingBox
+        state.trackingBox === assessment.trackingBox &&
+        state.livenessStatus === livenessStatus &&
+        state.livenessScore === livenessScore
       ) {
         return state;
       }
 
       return {
         faceStatus: assessment.status,
-        guidance: assessment.message,
+        guidance,
         holdProgress,
         trackingBox: assessment.trackingBox,
+        livenessStatus,
+        livenessScore,
         hasScanFailed: false,
       };
     }
   }
+};
+
+/**
+ * Menganalisis keaslian wajah hidup (Anti-Spoofing / Liveness Detection)
+ * melalui perubahan mikro-geometri landmark 3D dan dinamika tekstur piksel antar-frame.
+ */
+const createLivenessAnalyzer = () => {
+  const canvas = document.createElement('canvas');
+  canvas.width = PATCH_SIZE;
+  canvas.height = PATCH_SIZE;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  let prevLuma: Float32Array | null = null;
+  const yawHistory: number[] = [];
+  const pitchHistory: number[] = [];
+  const temporalDiffs: number[] = [];
+  let consecutiveFrozenFrames = 0;
+
+  return {
+    reset(): void {
+      prevLuma = null;
+      yawHistory.length = 0;
+      pitchHistory.length = 0;
+      temporalDiffs.length = 0;
+      consecutiveFrozenFrames = 0;
+    },
+    evaluate(
+      video: HTMLVideoElement,
+      box: FaceTrackingBox | null,
+    ): { readonly status: LivenessStatus; readonly score: number } {
+      if (!box) {
+        this.reset();
+        return { status: 'idle', score: 0 };
+      }
+
+      yawHistory.push(box.geometry.noseYawRatio);
+      pitchHistory.push(box.geometry.eyeMouthPitchRatio);
+      if (yawHistory.length > 12) yawHistory.shift();
+      if (pitchHistory.length > 12) pitchHistory.shift();
+
+      let frameDiff = 1.2;
+      let contrastScore = 18;
+
+      if (ctx && video.videoWidth > 0 && video.videoHeight > 0) {
+        const sx = Math.max(0, (box.leftPct / 100) * video.videoWidth);
+        const sy = Math.max(0, (box.topPct / 100) * video.videoHeight);
+        const sw = Math.max(16, (box.widthPct / 100) * video.videoWidth);
+        const sh = Math.max(16, (box.heightPct / 100) * video.videoHeight);
+
+        try {
+          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, PATCH_SIZE, PATCH_SIZE);
+          const pixels = ctx.getImageData(0, 0, PATCH_SIZE, PATCH_SIZE).data;
+          const currLuma = new Float32Array(PATCH_SIZE * PATCH_SIZE);
+
+          let sum = 0;
+          let sumSq = 0;
+          let diffSum = 0;
+          const total = PATCH_SIZE * PATCH_SIZE;
+
+          for (let i = 0; i < total; i++) {
+            const idx = i * 4;
+            const luma =
+              0.299 * pixels[idx]! +
+              0.587 * pixels[idx + 1]! +
+              0.114 * pixels[idx + 2]!;
+            currLuma[i] = luma;
+            sum += luma;
+            sumSq += luma * luma;
+            if (prevLuma) {
+              diffSum += Math.abs(luma - prevLuma[i]!);
+            }
+          }
+
+          const mean = sum / total;
+          const variance = Math.max(0, sumSq / total - mean * mean);
+          contrastScore = Math.sqrt(variance);
+          if (prevLuma) {
+            frameDiff = diffSum / total;
+          }
+          prevLuma = currLuma;
+        } catch {
+          // Abaikan jika canvas gagal membaca frame
+        }
+      }
+
+      temporalDiffs.push(frameDiff);
+      if (temporalDiffs.length > 10) temporalDiffs.shift();
+
+      // Hitung variasi mikro-gerakan 3D landmark
+      const calcRange = (arr: readonly number[]): number => {
+        if (arr.length < 2) return 0;
+        let min = arr[0]!;
+        let max = arr[0]!;
+        for (const v of arr) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        return max - min;
+      };
+
+      const yawRange = calcRange(yawHistory);
+      const pitchRange = calcRange(pitchHistory);
+      const avgTemporalDiff =
+        temporalDiffs.reduce((a, b) => a + b, 0) /
+        Math.max(1, temporalDiffs.length);
+
+      // Deteksi frame beku / gambar statis murni
+      if (frameDiff < 0.04 && yawRange < 0.0005 && pitchRange < 0.0005) {
+        consecutiveFrozenFrames += 1;
+      } else {
+        consecutiveFrozenFrames = 0;
+      }
+
+      if (consecutiveFrozenFrames >= 8) {
+        return { status: 'spoof_warning', score: 38 };
+      }
+
+      if (yawHistory.length < 3) {
+        return { status: 'checking', score: 72 };
+      }
+
+      // Kombinasikan skor tekstur alami, dinamika frame, dan mikro-geometri 3D
+      const naturalTextureComponent =
+        contrastScore >= 12 && contrastScore <= 85 ? 35 : 18;
+      const temporalComponent = Math.min(
+        35,
+        Math.max(15, avgTemporalDiff * 18),
+      );
+      const microMotionComponent = Math.min(
+        28,
+        Math.max(14, (yawRange + pitchRange) * 950),
+      );
+
+      const rawScore = Math.min(
+        99.4,
+        naturalTextureComponent + temporalComponent + microMotionComponent,
+      );
+      const roundedScore = Math.round(rawScore * 10) / 10;
+
+      return {
+        status: roundedScore >= 75 ? 'verified' : 'checking',
+        score: roundedScore,
+      };
+    },
+  };
 };
 
 /** Timer tahan-posisi: berhenti dan kembali ke 0 pada frame pertama yang tidak valid. */
@@ -143,13 +312,6 @@ const createHoldTimer = (durationMs: number) => {
   };
 };
 
-/**
- * Menjalankan prediksi BlazeFace pada frame video, memvalidasi posisi wajah
- * terhadap kotak panduan, dan mengelola timer auto-capture.
- *
- * Seluruh loop `requestAnimationFrame` hidup di dalam satu effect, sehingga
- * cleanup-nya selalu membatalkan frame yang sedang terjadwal.
- */
 export function useFaceDetection({
   videoRef,
   enabled,
@@ -170,6 +332,7 @@ export function useFaceDetection({
     let frameId: number | null = null;
     let lastAnalysisAt = Number.NEGATIVE_INFINITY;
     const holdTimer = createHoldTimer(AUTO_CAPTURE_HOLD_MS);
+    const livenessAnalyzer = createLivenessAnalyzer();
 
     const stop = (): void => {
       isActive = false;
@@ -184,18 +347,19 @@ export function useFaceDetection({
       const video = videoRef.current;
       if (!isVideoFrameReady(video)) {
         holdTimer.reset();
+        livenessAnalyzer.reset();
         return;
       }
 
       const faces = await faceModel.estimateFaces(video, false, false, true);
 
-      // Stream bisa saja sudah dilepas selama model berjalan.
       const currentVideo = videoRef.current;
       if (!isActive) {
         return;
       }
       if (!isVideoFrameReady(currentVideo)) {
         holdTimer.reset();
+        livenessAnalyzer.reset();
         return;
       }
 
@@ -203,21 +367,32 @@ export function useFaceDetection({
         width: currentVideo.videoWidth,
         height: currentVideo.videoHeight,
       });
-      const holdProgress = holdTimer.update(
-        assessment.status === 'valid',
-        performance.now(),
-      );
-      dispatch({ type: 'frame_assessed', assessment, holdProgress });
 
-      if (holdProgress >= 1) {
-        // Jika penangkapan gagal, timer harus terisi penuh lagi sebelum mencoba ulang.
+      const liveness = livenessAnalyzer.evaluate(
+        currentVideo,
+        assessment.trackingBox,
+      );
+
+      const isReadyForHold =
+        assessment.status === 'valid' && liveness.status !== 'spoof_warning';
+
+      const holdProgress = holdTimer.update(isReadyForHold, performance.now());
+
+      dispatch({
+        type: 'frame_assessed',
+        assessment,
+        holdProgress,
+        livenessStatus: liveness.status,
+        livenessScore: liveness.score,
+      });
+
+      if (holdProgress >= 1 && liveness.status === 'verified') {
         holdTimer.reset();
         notifyHoldComplete();
       }
     };
 
     const handleFailure = (error: unknown): void => {
-      // Error saat teardown (misalnya model sudah di-dispose) bukan kegagalan deteksi.
       if (!isActive) {
         return;
       }
@@ -272,5 +447,7 @@ export function useFaceDetection({
     guidance: analysis.guidance,
     holdProgress: analysis.holdProgress,
     trackingBox: analysis.trackingBox,
+    livenessStatus: analysis.livenessStatus,
+    livenessScore: analysis.livenessScore,
   };
 }
