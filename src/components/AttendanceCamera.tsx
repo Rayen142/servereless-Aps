@@ -28,11 +28,15 @@ import {
   PrinterIcon,
   RefreshIcon,
   ScanIcon,
+  SearchIcon,
   ShieldCheckIcon,
+  StethoscopeIcon,
+  TvIcon,
   VolumeIcon,
 } from './icons';
 
 const AUTO_POLI = 'auto';
+export type ViewRoleMode = 'kiosk' | 'doctor' | 'tv';
 
 /* -------------------------------------------------------------------------- */
 /*  Generator QR Code & Barcode SVG Deterministik untuk Struk Thermal         */
@@ -235,6 +239,7 @@ function MinimalQueuePanel({
   onQueueAction,
   isAdvancing,
   lastSpokenText,
+  allowStaffControls,
 }: {
   readonly queues: readonly PoliQueueSnapshot[];
   readonly activePoliName: string;
@@ -242,6 +247,7 @@ function MinimalQueuePanel({
   readonly onQueueAction: (poli: string, action: QueueControlAction) => void;
   readonly isAdvancing: boolean;
   readonly lastSpokenText: string | null;
+  readonly allowStaffControls: boolean;
 }) {
   const currentPoli =
     queues.find((q) => q.poliklinik === activePoliName) ??
@@ -258,7 +264,9 @@ function MinimalQueuePanel({
         <div className="flex flex-wrap items-center gap-2.5">
           <span className="h-2 w-2 rounded-full bg-emerald-500" />
           <span className="text-xs font-semibold text-neutral-900">
-            Panel Panggil Antrean Poliklinik
+            {allowStaffControls
+              ? 'Panel Kontrol Antrean Dokter & Petugas'
+              : 'Informasi Antrean Poliklinik Saat Ini'}
           </span>
           <select
             value={currentPoli.poliklinik}
@@ -277,48 +285,50 @@ function MinimalQueuePanel({
           </span>
         </div>
 
-        {/* Kontrol Petugas / Dokter: Panggil Ulang (TTS), Selesai, Panggil Berikutnya */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
-            disabled={isAdvancing}
-            title="Panggil ulang nomor saat ini dengan suara Bahasa Indonesia"
-            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
-          >
-            <VolumeIcon width={13} height={13} className="text-neutral-600" />
-            <span>Panggil Suara</span>
-          </button>
-
-          {servingStatus !== 'SELESAI' && (
+        {/* Kontrol Petugas / Dokter (Hanya tampil pada Mode Dokter/Petugas) */}
+        {allowStaffControls && (
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
-              onClick={() => onQueueAction(currentPoli.poliklinik, 'complete')}
+              onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
               disabled={isAdvancing}
-              title="Tandai pemeriksaan nomor antrean saat ini selesai"
-              className="inline-flex h-8 items-center gap-1 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
+              title="Panggil ulang nomor saat ini dengan suara Bahasa Indonesia"
+              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
             >
-              <CheckIcon width={13} height={13} className="text-emerald-600" />
-              <span>Selesai</span>
+              <VolumeIcon width={13} height={13} className="text-neutral-600" />
+              <span>Panggil Suara</span>
             </button>
-          )}
 
-          <button
-            type="button"
-            onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
-            disabled={!canAdvance || isAdvancing}
-            title={
-              canAdvance
-                ? 'Panggil antrean berikutnya dan umumkan dengan suara otomatis'
-                : 'Belum ada antrean menunggu berikutnya'
-            }
-            className="inline-flex h-8 items-center gap-1 rounded-full bg-neutral-900 px-3.5 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-35"
-          >
-            <VolumeIcon width={13} height={13} />
-            <span>Panggil Berikutnya</span>
-            <ChevronRightIcon width={13} height={13} />
-          </button>
-        </div>
+            {servingStatus !== 'SELESAI' && (
+              <button
+                type="button"
+                onClick={() => onQueueAction(currentPoli.poliklinik, 'complete')}
+                disabled={isAdvancing}
+                title="Tandai pemeriksaan nomor antrean saat ini selesai"
+                className="inline-flex h-8 items-center gap-1 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
+              >
+                <CheckIcon width={13} height={13} className="text-emerald-600" />
+                <span>Selesai</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
+              disabled={!canAdvance || isAdvancing}
+              title={
+                canAdvance
+                  ? 'Panggil antrean berikutnya dan umumkan dengan suara otomatis'
+                  : 'Belum ada antrean menunggu berikutnya'
+              }
+              className="inline-flex h-8 items-center gap-1 rounded-full bg-neutral-900 px-3.5 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-35"
+            >
+              <VolumeIcon width={13} height={13} />
+              <span>Panggil Berikutnya</span>
+              <ChevronRightIcon width={13} height={13} />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Ringkasan Status Antrean (MENUNGGU -> DIPANGGIL -> SELESAI) */}
@@ -394,6 +404,191 @@ function MinimalQueuePanel({
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Mode Layar TV Ruang Tunggu Poliklinik (Public Queue Display)              */
+/* -------------------------------------------------------------------------- */
+
+function WaitingRoomTvDisplay({
+  queues,
+  activePoliName,
+  onSelectPoli,
+  onQueueAction,
+  isAdvancing,
+  lastSpokenText,
+}: {
+  readonly queues: readonly PoliQueueSnapshot[];
+  readonly activePoliName: string;
+  readonly onSelectPoli: (poli: string) => void;
+  readonly onQueueAction: (poli: string, action: QueueControlAction) => void;
+  readonly isAdvancing: boolean;
+  readonly lastSpokenText: string | null;
+}) {
+  const currentPoli =
+    queues.find((q) => q.poliklinik === activePoliName) ??
+    queues[0] ??
+    DEFAULT_POLI_QUEUES[0];
+
+  const canAdvance =
+    currentPoli.currentServingSequence < currentPoli.latestQueueSequence;
+
+  return (
+    <div className="space-y-6">
+      {/* Main Spotlight Card */}
+      <div className="rounded-3xl bg-neutral-900 p-6 sm:p-8 text-white">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5">
+          <div>
+            <span className="inline-flex items-center gap-2 text-xs font-medium text-emerald-400">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+              MONITOR PANGGILAN POLIKLINIK · LIVE AUDIO TTS
+            </span>
+            <h2 className="mt-1 text-xl font-semibold sm:text-2xl">
+              {currentPoli.poliklinik}
+            </h2>
+            <p className="text-xs text-neutral-400">
+              {currentPoli.room} · {currentPoli.dokter}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
+              disabled={isAdvancing}
+              className="inline-flex h-9 items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-4 text-xs font-medium text-white transition hover:bg-white/15 disabled:opacity-40"
+            >
+              <VolumeIcon width={14} height={14} />
+              Panggil Ulang Suara
+            </button>
+            <button
+              type="button"
+              onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
+              disabled={!canAdvance || isAdvancing}
+              className="inline-flex h-9 items-center gap-1.5 rounded-full bg-emerald-500 px-4 text-xs font-semibold text-neutral-950 transition hover:bg-emerald-400 disabled:opacity-40"
+            >
+              <VolumeIcon width={14} height={14} />
+              Panggil Antrean Berikutnya
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-6 md:grid-cols-3 items-center">
+          <div className="md:col-span-2 rounded-2xl bg-white/5 p-6 border border-white/10">
+            <span className="text-xs uppercase tracking-wider text-neutral-400">
+              Nomor Antrean Sedang Dipanggil
+            </span>
+            <div className="mt-2 flex flex-wrap items-baseline gap-4">
+              <span className="font-mono text-6xl sm:text-7xl font-bold tracking-tight text-emerald-400">
+                {currentPoli.currentServingNumber}
+              </span>
+              <div>
+                <p className="text-lg font-semibold text-white">
+                  {currentPoli.currentPatientName ?? 'Pasien Poliklinik'}
+                </p>
+                <p className="font-mono text-xs text-neutral-400">
+                  No. RM: {currentPoli.currentPatientNoRm ?? '-'} · Silakan Masuk ke{' '}
+                  {currentPoli.room}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-2xl bg-white/5 p-4 border border-white/10">
+              <span className="text-xs text-neutral-400">Persiapan Berikutnya</span>
+              <p className="mt-1 font-mono text-3xl font-semibold text-white">
+                {currentPoli.nextQueueNumber ?? '—'}
+              </p>
+              <p className="mt-0.5 text-xs text-neutral-400 truncate">
+                {currentPoli.nextPatientName ?? 'Belum ada antrean'}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-2xl bg-white/5 p-3.5 border border-white/10">
+                <span className="text-[11px] text-neutral-400">Sisa Antrean</span>
+                <p className="mt-0.5 font-mono text-xl font-semibold text-white">
+                  {currentPoli.totalWaiting} Pasien
+                </p>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3.5 border border-white/10">
+                <span className="text-[11px] text-neutral-400">Nomor Terakhir</span>
+                <p className="mt-0.5 font-mono text-xl font-semibold text-white">
+                  {currentPoli.latestQueueNumber}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {lastSpokenText && (
+          <div className="mt-5 flex items-center gap-2.5 rounded-xl bg-white/10 px-4 py-2.5 text-xs text-emerald-300">
+            <VolumeIcon width={15} height={15} className="shrink-0" />
+            <span>Panggilan Suara Aktif: &ldquo;{lastSpokenText}&rdquo;</span>
+          </div>
+        )}
+      </div>
+
+      {/* Grid Seluruh 10 Poliklinik */}
+      <div>
+        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-neutral-500">
+          Status Antrean Seluruh Poliklinik (Klik untuk Memilih)
+        </h3>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {queues.map((q) => {
+            const isSelected = q.poliklinik === currentPoli.poliklinik;
+            return (
+              <button
+                key={q.poliklinik}
+                type="button"
+                onClick={() => onSelectPoli(q.poliklinik)}
+                className={`rounded-2xl border p-4 text-left transition ${
+                  isSelected
+                    ? 'border-neutral-900 bg-neutral-900 text-white shadow-sm'
+                    : 'border-neutral-200/80 bg-white text-neutral-900 hover:border-neutral-400'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`font-mono text-xs font-semibold ${
+                      isSelected ? 'text-emerald-400' : 'text-emerald-700'
+                    }`}
+                  >
+                    {q.prefix}
+                  </span>
+                  <span
+                    className={`text-[10px] ${
+                      isSelected ? 'text-neutral-400' : 'text-neutral-400'
+                    }`}
+                  >
+                    Menunggu: {q.totalWaiting}
+                  </span>
+                </div>
+                <p className="mt-1 font-mono text-2xl font-bold">
+                  {q.currentServingNumber}
+                </p>
+                <p
+                  className={`mt-1 truncate text-xs font-medium ${
+                    isSelected ? 'text-neutral-200' : 'text-neutral-800'
+                  }`}
+                >
+                  {q.poliklinik}
+                </p>
+                <p
+                  className={`mt-0.5 truncate text-[11px] ${
+                    isSelected ? 'text-neutral-400' : 'text-neutral-500'
+                  }`}
+                >
+                  Terakhir: {q.latestQueueNumber}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Empty State Minimalis                                                     */
 /* -------------------------------------------------------------------------- */
 
@@ -448,12 +643,14 @@ function QueueTicketCard({
   onQueueAction,
   isAdvancing,
   onNext,
+  allowStaffControls,
 }: {
   readonly patient: RecognizedPerson;
   readonly livePoliQueue?: PoliQueueSnapshot;
   readonly onQueueAction: (poli: string, action: QueueControlAction) => void;
   readonly isAdvancing: boolean;
   readonly onNext: () => void;
+  readonly allowStaffControls: boolean;
 }) {
   const ticket = patient.queueTicket;
   if (!ticket) {
@@ -477,8 +674,24 @@ function QueueTicketCard({
       ? 'DIPANGGIL'
       : 'MENUNGGU';
 
+  const isDuplicateScan =
+    patient.alreadyQueued === true || ticket.isExistingTicket === true;
+
   return (
     <div className="no-print rounded-2xl border border-neutral-200/80 bg-white p-5">
+      {isDuplicateScan && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 text-xs text-amber-900">
+          <p className="font-semibold">
+            Antrean Aktif Sudah Ada (Tidak Dobel Order)
+          </p>
+          <p className="mt-0.5 text-[11px] text-amber-800">
+            Satu pasien hanya dapat memiliki 1 antrean aktif. Menampilkan tiket{' '}
+            <strong className="font-mono">{ticket.queueNumber}</strong> milik{' '}
+            <strong>{patient.fullName}</strong> tanpa menerbitkan nomor baru.
+          </p>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-4">
         <div>
           <span className="text-xs text-neutral-500">Nomor Antrean Pasien</span>
@@ -532,31 +745,35 @@ function QueueTicketCard({
           Cetak Struk Thermal
         </button>
 
-        {!isTurnNow ? (
-          <button
-            type="button"
-            onClick={() => onQueueAction(ticket.poliklinik, 'call_next')}
-            disabled={isAdvancing}
-            className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
-          >
-            <VolumeIcon width={13} height={13} />
-            Panggil (+1)
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() =>
-              onQueueAction(
-                ticket.poliklinik,
-                isCompleted ? 'recall' : 'complete',
-              )
-            }
-            disabled={isAdvancing}
-            className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
-          >
-            <CheckIcon width={13} height={13} />
-            {isCompleted ? 'Panggil Ulang' : 'Tandai Selesai'}
-          </button>
+        {allowStaffControls && (
+          <>
+            {!isTurnNow ? (
+              <button
+                type="button"
+                onClick={() => onQueueAction(ticket.poliklinik, 'call_next')}
+                disabled={isAdvancing}
+                className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
+              >
+                <VolumeIcon width={13} height={13} />
+                Panggil (+1)
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  onQueueAction(
+                    ticket.poliklinik,
+                    isCompleted ? 'recall' : 'complete',
+                  )
+                }
+                disabled={isAdvancing}
+                className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
+              >
+                <CheckIcon width={13} height={13} />
+                {isCompleted ? 'Panggil Ulang' : 'Tandai Selesai'}
+              </button>
+            )}
+          </>
         )}
 
         <button
@@ -578,12 +795,14 @@ function QueueTicketCard({
 function PatientDetails({
   patient,
   onAddHistory,
+  allowDoctorForm,
 }: {
   readonly patient: RecognizedPerson;
   readonly onAddHistory: (
     item: MedicalHistoryItem,
     fullHistory?: readonly MedicalHistoryItem[],
   ) => void;
+  readonly allowDoctorForm: boolean;
 }) {
   const allergy = hasRealAllergy(patient.allergies);
   const [isAddingNote, setIsAddingNote] = useState(false);
@@ -721,18 +940,20 @@ function PatientDetails({
           <p className="text-xs font-semibold text-neutral-900">
             Riwayat Pemeriksaan ({patient.medicalHistory.length})
           </p>
-          <button
-            type="button"
-            onClick={() => setIsAddingNote((v) => !v)}
-            className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 transition hover:bg-neutral-50"
-          >
-            <PlusIcon width={12} height={12} />
-            {isAddingNote ? 'Tutup Form' : 'Catat Pemeriksaan Dokter'}
-          </button>
+          {allowDoctorForm && (
+            <button
+              type="button"
+              onClick={() => setIsAddingNote((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 transition hover:bg-neutral-50"
+            >
+              <PlusIcon width={12} height={12} />
+              {isAddingNote ? 'Tutup Form' : 'Catat Pemeriksaan Dokter'}
+            </button>
+          )}
         </div>
 
         {/* Form Tambah Riwayat Pemeriksaan Dokter */}
-        {isAddingNote && (
+        {allowDoctorForm && isAddingNote && (
           <form
             onSubmit={(e) => void handleSaveDoctorNote(e)}
             className="mt-3 space-y-2.5 rounded-xl border border-neutral-200 bg-neutral-50/80 p-3.5 text-xs"
@@ -823,6 +1044,7 @@ function PatientDetails({
 function AttendanceCamera() {
   const frame = useFrameCapture();
   const verification = useAttendanceVerification();
+  const [roleMode, setRoleMode] = useState<ViewRoleMode>('doctor');
   const [poli, setPoli] = useState<string>(AUTO_POLI);
   const [queues, setQueues] = useState<readonly PoliQueueSnapshot[]>(
     DEFAULT_POLI_QUEUES,
@@ -831,7 +1053,13 @@ function AttendanceCamera() {
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [lastSpokenText, setLastSpokenText] = useState<string | null>(null);
 
-  const camera = useWebCamera({ enabled: frame.image === null });
+  // State Pencarian Manual Fallback (NIK / No. RM / Nama)
+  const [showManualSearch, setShowManualSearch] = useState(false);
+  const [manualQuery, setManualQuery] = useState('');
+
+  const camera = useWebCamera({
+    enabled: roleMode !== 'tv' && frame.image === null,
+  });
 
   const refreshQueues = useCallback(async () => {
     const data = await fetchPoliQueues();
@@ -859,16 +1087,31 @@ function AttendanceCamera() {
     }
   };
 
+  const handleManualLookup = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!manualQuery.trim()) return;
+    const ok = await verification.lookupManual(
+      manualQuery.trim(),
+      poli === AUTO_POLI ? undefined : poli,
+    );
+    if (ok) {
+      setManualQuery('');
+      setShowManualSearch(false);
+      await refreshQueues();
+    }
+  };
+
   const detection = useFaceDetection({
     videoRef: camera.videoRef,
-    enabled: camera.status === 'ready' && frame.image === null,
+    enabled:
+      roleMode !== 'tv' && camera.status === 'ready' && frame.image === null,
     onHoldComplete: captureAndIssue,
   });
 
   const hasFace = detection.trackingBox !== null;
 
   useEffect(() => {
-    if (camera.status !== 'ready' || !hasFace) {
+    if (roleMode === 'tv' || camera.status !== 'ready' || !hasFace) {
       return undefined;
     }
     const identify = () => {
@@ -880,7 +1123,13 @@ function AttendanceCamera() {
     identify();
     const id = window.setInterval(identify, 2500);
     return () => window.clearInterval(id);
-  }, [camera.status, camera.videoRef, hasFace, verification.identifyLive]);
+  }, [
+    roleMode,
+    camera.status,
+    camera.videoRef,
+    hasFace,
+    verification.identifyLive,
+  ]);
 
   const live = verification.liveIdentity;
   const patient = verification.feedback?.person ?? (frame.image ? live : null);
@@ -941,17 +1190,23 @@ function AttendanceCamera() {
   };
 
   const statusText = (() => {
-    if (frame.image) {
-      if (verification.isSubmitting) return 'Memverifikasi wajah…';
+    if (frame.image || verification.feedback?.person) {
+      if (verification.isSubmitting) return 'Memverifikasi identitas…';
       if (error) return error;
+      if (patient?.alreadyQueued || patient?.queueTicket?.isExistingTicket) {
+        return `Antrean aktif sudah ada (${patient.queueTicket?.queueNumber}) · Tidak dobel order`;
+      }
       if (patient?.queueTicket) return 'Terverifikasi · Tiket antrean siap';
       return 'Foto wajah berhasil diambil';
     }
+    if (error) return error;
     if (camera.status !== 'ready') return 'Menyiapkan kamera…';
     if (!hasFace) return 'Posisikan wajah menghadap kamera';
     if (detection.faceStatus === 'valid') return 'Tahan sebentar untuk memindai…';
     return detection.guidance;
   })();
+
+  const allowStaffControls = roleMode === 'doctor';
 
   return (
     <div>
@@ -963,135 +1218,248 @@ function AttendanceCamera() {
         />
       )}
 
-      {/* Panel Panggil Antrean + Suara TTS */}
-      <MinimalQueuePanel
-        queues={queues}
-        activePoliName={effectivePoliName}
-        onSelectPoli={(selected) => setMonitorPoli(selected)}
-        onQueueAction={(target, action) => void handleQueueAction(target, action)}
-        isAdvancing={isAdvancing}
-        lastSpokenText={lastSpokenText}
-      />
+      {/* Selector Mode Tampilan Peran (Role-Based View Switcher) */}
+      <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-neutral-200/80 bg-white px-4 py-2.5">
+        <div className="flex items-center gap-2 text-xs text-neutral-500">
+          <span className="font-semibold text-neutral-800">Mode Terminal:</span>
+          <span>
+            {roleMode === 'kiosk'
+              ? 'Anjungan Mandiri Pasien (Tanpa Tombol Admin)'
+              : roleMode === 'doctor'
+                ? 'Meja Dokter & Petugas (Kontrol Panggilan + Input SOAP)'
+                : 'Layar TV Ruang Tunggu Poliklinik'}
+          </span>
+        </div>
 
-      <div className="no-print grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-start">
-        {/* Kolom Kiri: Kamera Biometrik */}
-        <section className="rounded-2xl border border-neutral-200/80 bg-white p-4 space-y-3.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-neutral-900">
-              Kamera Pemindai Wajah
-            </span>
-
-            <div className="flex items-center gap-2">
-              <label htmlFor="poli-select" className="text-xs text-neutral-500">
-                Poli:
-              </label>
-              <select
-                id="poli-select"
-                value={poli}
-                onChange={(e) => {
-                  setPoli(e.target.value);
-                  if (e.target.value !== AUTO_POLI) {
-                    setMonitorPoli(e.target.value);
-                  }
-                }}
-                className="h-8 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-medium text-neutral-800 outline-none transition focus:border-neutral-900 focus:bg-white"
-              >
-                <option value={AUTO_POLI}>Otomatis (Sesuai Riwayat)</option>
-                {POLIKLINIK_LIST.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <CameraView
-            camera={camera}
-            detection={detection}
-            capturedImage={frame.image}
-            isFlashing={frame.isFlashing}
-            faceLabel={live ? live.fullName : null}
-            faceSubLabel={live ? `${live.noRm} · ${live.poliklinik}` : null}
-            faceAlert={live ? hasRealAllergy(live.allergies) : false}
+        <div className="flex items-center gap-1 rounded-full bg-neutral-100 p-1">
+          <button
+            type="button"
+            onClick={() => setRoleMode('kiosk')}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
+              roleMode === 'kiosk'
+                ? 'bg-white text-neutral-900 shadow-sm'
+                : 'text-neutral-600 hover:text-neutral-900'
+            }`}
           >
-            {frame.image && verification.isSubmitting && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/55 backdrop-blur-sm">
-                <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                <p className="text-xs font-medium text-white">
-                  Mencocokkan wajah & menerbitkan antrean…
-                </p>
-              </div>
-            )}
-          </CameraView>
+            <ScanIcon width={12} height={12} />
+            Kiosk Pasien
+          </button>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
-            <div className="flex items-center gap-2">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  error
-                    ? 'bg-rose-500'
-                    : hasFace || frame.image
-                      ? 'bg-emerald-500'
-                      : 'bg-neutral-300'
-                }`}
-              />
-              <span
-                className={`text-xs ${
-                  error ? 'font-medium text-rose-600' : 'text-neutral-600'
-                }`}
-              >
-                {statusText}
-              </span>
-            </div>
+          <button
+            type="button"
+            onClick={() => setRoleMode('doctor')}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
+              roleMode === 'doctor'
+                ? 'bg-white text-neutral-900 shadow-sm'
+                : 'text-neutral-600 hover:text-neutral-900'
+            }`}
+          >
+            <StethoscopeIcon width={12} height={12} />
+            Mode Dokter / Poli
+          </button>
 
-            {frame.image ? (
-              <button
-                type="button"
-                onClick={handleNext}
-                disabled={verification.isSubmitting}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-50"
-              >
-                <RefreshIcon width={13} height={13} />
-                Pindai Ulang
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={captureAndIssue}
-                disabled={camera.status !== 'ready'}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
-              >
-                <ScanIcon width={13} height={13} />
-                Ambil Antrean
-              </button>
-            )}
-          </div>
-        </section>
-
-        {/* Kolom Kanan: Tiket Antrean & Rekam Medis */}
-        <section className="space-y-4">
-          {patient ? (
-            <>
-              <QueueTicketCard
-                patient={patient}
-                livePoliQueue={activePoliQueue}
-                onQueueAction={(target, action) =>
-                  void handleQueueAction(target, action)
-                }
-                isAdvancing={isAdvancing}
-                onNext={handleNext}
-              />
-              <PatientDetails
-                patient={patient}
-                onAddHistory={verification.appendMedicalHistory}
-              />
-            </>
-          ) : (
-            <EmptyState activePoliQueue={activePoliQueue} />
-          )}
-        </section>
+          <button
+            type="button"
+            onClick={() => setRoleMode('tv')}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
+              roleMode === 'tv'
+                ? 'bg-white text-neutral-900 shadow-sm'
+                : 'text-neutral-600 hover:text-neutral-900'
+            }`}
+          >
+            <TvIcon width={12} height={12} />
+            Layar TV Antrean
+          </button>
+        </div>
       </div>
+
+      {roleMode === 'tv' ? (
+        <WaitingRoomTvDisplay
+          queues={queues}
+          activePoliName={effectivePoliName}
+          onSelectPoli={(selected) => setMonitorPoli(selected)}
+          onQueueAction={(target, action) =>
+            void handleQueueAction(target, action)
+          }
+          isAdvancing={isAdvancing}
+          lastSpokenText={lastSpokenText}
+        />
+      ) : (
+        <>
+          {/* Panel Panggil Antrean + Suara TTS */}
+          <MinimalQueuePanel
+            queues={queues}
+            activePoliName={effectivePoliName}
+            onSelectPoli={(selected) => setMonitorPoli(selected)}
+            onQueueAction={(target, action) =>
+              void handleQueueAction(target, action)
+            }
+            isAdvancing={isAdvancing}
+            lastSpokenText={lastSpokenText}
+            allowStaffControls={allowStaffControls}
+          />
+
+          <div className="no-print grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-start">
+            {/* Kolom Kiri: Kamera Biometrik + Fallback Manual NIK/No.RM */}
+            <section className="rounded-2xl border border-neutral-200/80 bg-white p-4 space-y-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-neutral-900">
+                  Kamera Pemindai Wajah
+                </span>
+
+                <div className="flex items-center gap-2">
+                  <label htmlFor="poli-select" className="text-xs text-neutral-500">
+                    Poli:
+                  </label>
+                  <select
+                    id="poli-select"
+                    value={poli}
+                    onChange={(e) => {
+                      setPoli(e.target.value);
+                      if (e.target.value !== AUTO_POLI) {
+                        setMonitorPoli(e.target.value);
+                      }
+                    }}
+                    className="h-8 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-medium text-neutral-800 outline-none transition focus:border-neutral-900 focus:bg-white"
+                  >
+                    <option value={AUTO_POLI}>Otomatis (Sesuai Riwayat)</option>
+                    {POLIKLINIK_LIST.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <CameraView
+                camera={camera}
+                detection={detection}
+                capturedImage={frame.image}
+                isFlashing={frame.isFlashing}
+                faceLabel={live ? live.fullName : null}
+                faceSubLabel={live ? `${live.noRm} · ${live.poliklinik}` : null}
+                faceAlert={live ? hasRealAllergy(live.allergies) : false}
+              >
+                {verification.isSubmitting && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/55 backdrop-blur-sm">
+                    <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    <p className="text-xs font-medium text-white">
+                      Memverifikasi data pasien & menerbitkan antrean…
+                    </p>
+                  </div>
+                )}
+              </CameraView>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      error
+                        ? 'bg-rose-500'
+                        : hasFace || frame.image || patient
+                          ? 'bg-emerald-500'
+                          : 'bg-neutral-300'
+                    }`}
+                  />
+                  <span
+                    className={`text-xs ${
+                      error ? 'font-medium text-rose-600' : 'text-neutral-600'
+                    }`}
+                  >
+                    {statusText}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowManualSearch((v) => !v)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-600 transition hover:bg-neutral-50"
+                  >
+                    <SearchIcon width={12} height={12} />
+                    <span>{showManualSearch ? 'Tutup Cari' : 'Cari NIK / RM'}</span>
+                  </button>
+
+                  {frame.image || patient ? (
+                    <button
+                      type="button"
+                      onClick={handleNext}
+                      disabled={verification.isSubmitting}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-50"
+                    >
+                      <RefreshIcon width={13} height={13} />
+                      Pindai Ulang
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={captureAndIssue}
+                      disabled={camera.status !== 'ready'}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
+                    >
+                      <ScanIcon width={13} height={13} />
+                      Ambil Antrean
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Fallback Pencarian Manual via NIK / No. RM / Nama */}
+              {showManualSearch && (
+                <form
+                  onSubmit={(e) => void handleManualLookup(e)}
+                  className="flex items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 p-2.5"
+                >
+                  <SearchIcon
+                    width={14}
+                    height={14}
+                    className="ml-1.5 shrink-0 text-neutral-400"
+                  />
+                  <input
+                    value={manualQuery}
+                    onChange={(e) => setManualQuery(e.target.value)}
+                    placeholder="Ketik No. RM (mis: RM-2026-001), NIK, atau Nama Pasien…"
+                    className="h-8 flex-1 bg-transparent text-xs text-neutral-900 outline-none placeholder:text-neutral-400"
+                  />
+                  <button
+                    type="submit"
+                    disabled={verification.isSubmitting || !manualQuery.trim()}
+                    className="h-8 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
+                  >
+                    Cari & Ambil Tiket
+                  </button>
+                </form>
+              )}
+            </section>
+
+            {/* Kolom Kanan: Tiket Antrean & Rekam Medis */}
+            <section className="space-y-4">
+              {patient ? (
+                <>
+                  <QueueTicketCard
+                    patient={patient}
+                    livePoliQueue={activePoliQueue}
+                    onQueueAction={(target, action) =>
+                      void handleQueueAction(target, action)
+                    }
+                    isAdvancing={isAdvancing}
+                    onNext={handleNext}
+                    allowStaffControls={allowStaffControls}
+                  />
+                  <PatientDetails
+                    patient={patient}
+                    onAddHistory={verification.appendMedicalHistory}
+                    allowDoctorForm={allowStaffControls}
+                  />
+                </>
+              ) : (
+                <EmptyState activePoliQueue={activePoliQueue} />
+              )}
+            </section>
+          </div>
+        </>
+      )}
     </div>
   );
 }

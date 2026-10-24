@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import AttendanceCamera from './components/AttendanceCamera';
+import EvaluationDashboardPage from './components/EvaluationDashboardPage';
 import FaceRegistrationPage from './components/FaceRegistrationPage';
-import { ScanIcon, UserPlusIcon } from './components/icons';
+import { ChartBarIcon, ScanIcon, UserPlusIcon } from './components/icons';
 
-type ActivePage = 'attendance' | 'register';
+type ActivePage = 'attendance' | 'register' | 'analytics';
 
 function App() {
   const [activePage, setActivePage] = useState<ActivePage>('attendance');
@@ -24,11 +25,29 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
+  const pageHeader = {
+    attendance: {
+      title: 'Verifikasi Wajah & Antrean Poliklinik',
+      subtitle:
+        'Pindai wajah pasien untuk membuka rekam medis, menerbitkan tiket antrean, atau memanggil antrean poli.',
+    },
+    register: {
+      title: 'Pendaftaran Pasien Baru (Multi-Pose)',
+      subtitle:
+        'Rekam biometrik wajah hingga 3 sudut pose beserta identitas medis awal pasien baru ke dalam sistem.',
+    },
+    analytics: {
+      title: 'Evaluasi Biometrik & Log Kunjungan Rumah Sakit',
+      subtitle:
+        'Metrik pengujian akurasi algoritma (Confusion Matrix, Precision, Recall, F1-Score, Latency) dan riwayat antrean.',
+    },
+  }[activePage];
+
   return (
     <div className="min-h-screen bg-[#fafafa] text-neutral-900 antialiased">
       {/* Header Minimalis */}
       <header className="no-print sticky top-0 z-30 border-b border-neutral-200/80 bg-white/85 backdrop-blur-md">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3.5 sm:px-8">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-5 py-3.5 sm:px-8">
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-xs font-semibold tracking-tight text-white">
               RS
@@ -78,6 +97,18 @@ function App() {
               <UserPlusIcon width={13} height={13} />
               Pasien Baru
             </button>
+            <button
+              type="button"
+              onClick={() => setActivePage('analytics')}
+              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
+                activePage === 'analytics'
+                  ? 'bg-white text-neutral-900 shadow-sm'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              <ChartBarIcon width={13} height={13} />
+              Evaluasi & Log
+            </button>
           </nav>
         </div>
       </header>
@@ -87,14 +118,10 @@ function App() {
         <div className="no-print mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-neutral-900 sm:text-2xl">
-              {activePage === 'attendance'
-                ? 'Verifikasi Wajah & Antrean Poliklinik'
-                : 'Pendaftaran Pasien Baru'}
+              {pageHeader.title}
             </h1>
             <p className="mt-1 text-xs text-neutral-500 sm:text-sm">
-              {activePage === 'attendance'
-                ? 'Pindai wajah pasien untuk membuka rekam medis, menerbitkan tiket antrean, atau memanggil antrean poli.'
-                : 'Rekam biometrik wajah dan identitas medis awal pasien baru ke dalam sistem.'}
+              {pageHeader.subtitle}
             </p>
           </div>
 
@@ -117,13 +144,13 @@ function App() {
           )}
         </div>
 
-        {activePage === 'attendance' ? (
-          <AttendanceCamera />
-        ) : (
+        {activePage === 'attendance' && <AttendanceCamera />}
+        {activePage === 'register' && (
           <FaceRegistrationPage
             onGoToAttendance={() => setActivePage('attendance')}
           />
         )}
+        {activePage === 'analytics' && <EvaluationDashboardPage />}
       </main>
     </div>
   );

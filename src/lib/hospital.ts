@@ -14,7 +14,7 @@ export const POLIKLINIK_LIST = [
 ] as const;
 
 export type QueueServingStatus = 'MENUNGGU' | 'DIPANGGIL' | 'SELESAI';
-export type QueueControlAction = 'call_next' | 'recall' | 'complete';
+export type QueueControlAction = 'call_next' | 'recall' | 'complete' | 'reset';
 
 export interface PoliQueueSnapshot {
   readonly poliklinik: string;
@@ -32,6 +32,57 @@ export interface PoliQueueSnapshot {
   readonly latestQueueNumber: string;
   readonly totalWaiting: number;
   readonly estimatedWaitMinutes: number;
+}
+
+export interface EvaluationCaseResult {
+  readonly caseId: string;
+  readonly type: 'POSITIVE' | 'NEGATIVE' | string;
+  readonly fullName: string;
+  readonly expectedPersonId: string | null;
+  readonly predictedPersonId: string | null;
+  readonly similarity: number;
+  readonly latencyMs: number;
+  readonly outcome: 'TP' | 'TN' | 'FP' | 'FN';
+}
+
+export interface BiometricEvaluationReport {
+  readonly evaluatedAt: string;
+  readonly threshold: number;
+  readonly totalCases: number;
+  readonly tp: number;
+  readonly tn: number;
+  readonly fp: number;
+  readonly fn: number;
+  readonly accuracy: number;
+  readonly precision: number;
+  readonly recall: number;
+  readonly f1Score: number;
+  readonly avgLatencyMs: number;
+  readonly cachedEnrolledCount: number;
+  readonly cases: readonly EvaluationCaseResult[];
+}
+
+export interface AttendanceLogRecord {
+  readonly attendanceId: string;
+  readonly Timestamp: string;
+  readonly ID: string;
+  readonly NoRM: string;
+  readonly FullName: string;
+  readonly Gender: string;
+  readonly Allergies: string;
+  readonly Poliklinik: string;
+  readonly QueueNumber: string;
+  readonly Status: string;
+  readonly VerificationMethod?: string;
+  readonly Similarity: number;
+}
+
+export interface HospitalAnalyticsData {
+  readonly evaluation: BiometricEvaluationReport;
+  readonly totalRegisteredPatients: number;
+  readonly totalAttendanceLogs: number;
+  readonly recentLogs: readonly AttendanceLogRecord[];
+  readonly queues: readonly PoliQueueSnapshot[];
 }
 
 export const DEFAULT_POLI_QUEUES: readonly PoliQueueSnapshot[] = [
@@ -229,6 +280,27 @@ export async function fetchPoliQueues(): Promise<readonly PoliQueueSnapshot[]> {
       : DEFAULT_POLI_QUEUES;
   } catch {
     return DEFAULT_POLI_QUEUES;
+  }
+}
+
+export async function fetchHospitalAnalytics(
+  forceRefresh = false,
+): Promise<HospitalAnalyticsData | null> {
+  const apiUrl = import.meta.env.VITE_API_URL;
+  if (!apiUrl) {
+    return null;
+  }
+  const analyticsUrl =
+    apiUrl.replace(/\/verify\/?$/, '/analytics') +
+    (forceRefresh ? '?refresh=1' : '');
+  try {
+    const resp = await fetch(analyticsUrl);
+    if (!resp.ok) {
+      return null;
+    }
+    return (await resp.json()) as HospitalAnalyticsData;
+  } catch {
+    return null;
   }
 }
 

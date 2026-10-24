@@ -1,10 +1,12 @@
 import base64
 import binascii
+import hashlib
 import json
 import os
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -75,6 +77,10 @@ POLIKLINIK_CONFIG: dict[str, dict[str, str]] = {
 _rekognition_client = None
 _dynamodb_resource = None
 
+QUEUE_STATE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "dataset" / "queue_state.json"
+)
+
 DEFAULT_INITIAL_QUEUES: dict[str, dict[str, int]] = {
     "PD": {"serving": 2, "issued": 5},
     "UM": {"serving": 4, "issued": 7},
@@ -88,6 +94,33 @@ DEFAULT_INITIAL_QUEUES: dict[str, dict[str, int]] = {
     "OR": {"serving": 1, "issued": 2},
 }
 
+# Pasien awal di ruang tunggu menggunakan nomor RM seri 800 agar tidak bentrok
+# dengan 20 subjek uji dataset (RM-2026-001 s/d RM-2026-020).
+DEFAULT_QUEUE_PATIENTS: dict[str, dict[int, dict[str, str]]] = {
+    "PD": {
+        2: {"fullName": "Surya Darmawan", "noRm": "RM-2026-801"},
+        3: {"fullName": "Lestari Wulandari", "noRm": "RM-2026-802"},
+        4: {"fullName": "Bagus Setiawan", "noRm": "RM-2026-803"},
+        5: {"fullName": "Kartika Sari", "noRm": "RM-2026-804"},
+    },
+    "UM": {
+        4: {"fullName": "Wahyu Hidayat", "noRm": "RM-2026-805"},
+        5: {"fullName": "Ratih Permata", "noRm": "RM-2026-806"},
+        6: {"fullName": "Kurniawan Putra", "noRm": "RM-2026-807"},
+        7: {"fullName": "Yuni Astuti", "noRm": "RM-2026-808"},
+    },
+    "JT": {
+        1: {"fullName": "Hermawan Susanto", "noRm": "RM-2026-809"},
+        2: {"fullName": "Sri Wahyuni", "noRm": "RM-2026-810"},
+        3: {"fullName": "Taufik Hidayat", "noRm": "RM-2026-811"},
+    },
+    "PR": {
+        2: {"fullName": "Rudi Hartono", "noRm": "RM-2026-812"},
+        3: {"fullName": "Indah Permatasari", "noRm": "RM-2026-813"},
+        4: {"fullName": "Anton Wijaya", "noRm": "RM-2026-814"},
+    },
+}
+
 _queue_counter: dict[str, int] = {
     prefix: vals["issued"] for prefix, vals in DEFAULT_INITIAL_QUEUES.items()
 }
@@ -98,31 +131,68 @@ _serving_status: dict[str, str] = {
     prefix: "DIPANGGIL" for prefix in DEFAULT_INITIAL_QUEUES
 }
 _queue_patients: dict[str, dict[int, dict[str, str]]] = {
-    "PD": {
-        2: {"fullName": "Aditya Pratama", "noRm": "RM-2026-001"},
-        3: {"fullName": "Rizky Ramadhan", "noRm": "RM-2026-003"},
-        4: {"fullName": "Hendra Gunawan", "noRm": "RM-2026-007"},
-        5: {"fullName": "Siti Nurhaliza", "noRm": "RM-2026-010"},
-    },
-    "UM": {
-        4: {"fullName": "Budi Santoso", "noRm": "RM-2026-004"},
-        5: {"fullName": "Dewi Lestari", "noRm": "RM-2026-008"},
-        6: {"fullName": "Fajar Nugroho", "noRm": "RM-2026-012"},
-        7: {"fullName": "Rina Kartika", "noRm": "RM-2026-015"},
-    },
-    "JT": {
-        1: {"fullName": "Dimas Saputra", "noRm": "RM-2026-005"},
-        2: {"fullName": "Agus Salim", "noRm": "RM-2026-011"},
-        3: {"fullName": "Ratna Sari", "noRm": "RM-2026-014"},
-    },
-    "PR": {
-        2: {"fullName": "Nabila Putri Maharani", "noRm": "RM-2026-002"},
-        3: {"fullName": "Eko Prasetyo", "noRm": "RM-2026-009"},
-        4: {"fullName": "Maya Indriani", "noRm": "RM-2026-016"},
-    },
+    p: dict(mapping) for p, mapping in DEFAULT_QUEUE_PATIENTS.items()
 }
+# Menyimpan 1 tiket antrean aktif per pasien (key: noRm / personId / imageHash)
+# untuk mencegah dobel order jika orang/foto yang sama discan berulang kali.
+_patient_active_tickets: dict[str, dict[str, Any]] = {}
 _custom_medical_records: dict[str, list[dict[str, str]]] = {}
 MINUTES_PER_PATIENT = 8
+
+
+def _save_queue_state() -> None:
+    try:
+        QUEUE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        serializable_patients = {
+            prefix: {str(k): v for k, v in pmap.items()}
+            for prefix, pmap in _queue_patients.items()
+        }
+        state = {
+            "queue_counter": _queue_counter,
+            "serving_counter": _serving_counter,
+            "serving_status": _serving_status,
+            "queue_patients": serializable_patients,
+            "patient_active_tickets": _patient_active_tickets,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        QUEUE_STATE_PATH.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _load_queue_state() -> None:
+    if not QUEUE_STATE_PATH.exists():
+        return
+    try:
+        raw = json.loads(QUEUE_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw.get("queue_counter"), dict):
+            for k, v in raw["queue_counter"].items():
+                _queue_counter[str(k)] = int(v)
+        if isinstance(raw.get("serving_counter"), dict):
+            for k, v in raw["serving_counter"].items():
+                _serving_counter[str(k)] = int(v)
+        if isinstance(raw.get("serving_status"), dict):
+            for k, v in raw["serving_status"].items():
+                _serving_status[str(k)] = str(v)
+        if isinstance(raw.get("queue_patients"), dict):
+            for prefix, pmap in raw["queue_patients"].items():
+                if isinstance(pmap, dict):
+                    _queue_patients[str(prefix)] = {
+                        int(seq): val
+                        for seq, val in pmap.items()
+                        if str(seq).isdigit() and isinstance(val, dict)
+                    }
+        if isinstance(raw.get("patient_active_tickets"), dict):
+            for k, v in raw["patient_active_tickets"].items():
+                if isinstance(v, dict):
+                    _patient_active_tickets[str(k)] = v
+    except Exception:
+        pass
+
+
+_load_queue_state()
 
 
 def _get_patient_for_queue(prefix: str, seq: int) -> dict[str, str]:
@@ -193,14 +263,41 @@ def advance_poli_queue(
     normalized_action = queue_action.strip().lower()
     if normalized_action == "complete":
         _serving_status[prefix] = "SELESAI"
+        # Jika pasien yang sedang dilayani sudah selesai, hapus kunci antrean aktifnya
+        finished_patient = _queue_patients.get(prefix, {}).get(serving_seq)
+        if finished_patient:
+            rm_key = str(finished_patient.get("noRm") or "").strip().upper()
+            if rm_key:
+                _patient_active_tickets.pop(rm_key, None)
     elif normalized_action == "recall":
         _serving_status[prefix] = "DIPANGGIL"
+    elif normalized_action == "reset":
+        defaults = DEFAULT_INITIAL_QUEUES.get(prefix, {"serving": 1, "issued": 3})
+        _serving_counter[prefix] = defaults["serving"]
+        _queue_counter[prefix] = defaults["issued"]
+        _serving_status[prefix] = "DIPANGGIL"
+        _queue_patients[prefix] = dict(DEFAULT_QUEUE_PATIENTS.get(prefix, {}))
+        # Hapus seluruh tiket aktif yang terdaftar di poli ini
+        keys_to_remove = [
+            k
+            for k, t in _patient_active_tickets.items()
+            if str(t.get("queueNumber") or "").startswith(f"{prefix}-")
+        ]
+        for k in keys_to_remove:
+            _patient_active_tickets.pop(k, None)
     else:
         if serving_seq < issued_seq:
+            # Pasien sebelumnya otomatis selesai ketika dokter memanggil pasien berikutnya
+            prev_patient = _queue_patients.get(prefix, {}).get(serving_seq)
+            if prev_patient:
+                rm_key = str(prev_patient.get("noRm") or "").strip().upper()
+                if rm_key:
+                    _patient_active_tickets.pop(rm_key, None)
             serving_seq += 1
             _serving_counter[prefix] = serving_seq
         _serving_status[prefix] = "DIPANGGIL"
 
+    _save_queue_state()
     return get_poli_queue_snapshot(poli_name)
 
 
@@ -295,9 +392,82 @@ def _match_threshold() -> float:
     return threshold
 
 
+def _refresh_existing_ticket(existing: dict[str, Any]) -> dict[str, Any]:
+    """Perbarui informasi antrean dinamis pada tiket aktif milik pasien tanpa menerbitkan nomor baru."""
+    poli_name = str(existing.get("poliklinik") or "Poli Umum")
+    poli_info = POLIKLINIK_CONFIG.get(
+        poli_name,
+        {
+            "prefix": "PL",
+            "dokter": existing.get("dokter") or "dr. Sinta Maharani",
+            "room": existing.get("room") or "Lantai 1 • Ruang 101",
+        },
+    )
+    prefix = poli_info["prefix"]
+    seq = int(existing.get("queueSequence") or 1)
+    serving_seq = _serving_counter.get(prefix, 1)
+    issued_seq = _queue_counter.get(prefix, seq)
+    patients_ahead = max(0, seq - serving_seq)
+    estimated_wait_minutes = patients_ahead * MINUTES_PER_PATIENT
+
+    return {
+        **existing,
+        "currentServingNumber": f"{prefix}-{serving_seq:03d}",
+        "currentServingSequence": serving_seq,
+        "latestQueueNumber": f"{prefix}-{issued_seq:03d}",
+        "patientsAhead": patients_ahead,
+        "estimatedWaitMinutes": estimated_wait_minutes,
+        "status": "DIPANGGIL" if patients_ahead == 0 else "MENUNGGU",
+        "isExistingTicket": True,
+    }
+
+
+def _find_existing_active_ticket(
+    no_rm: str, person_id: str, image_hash: str | None = None
+) -> dict[str, Any] | None:
+    """Cek apakah pasien (berdasarkan No. RM, Person ID, atau hash foto) sudah memiliki order antrean aktif."""
+    lookup_keys = [
+        k.strip().upper()
+        for k in (no_rm, person_id, f"IMG:{image_hash}" if image_hash else "")
+        if k and k.strip()
+    ]
+    for key in lookup_keys:
+        ticket = _patient_active_tickets.get(key)
+        if not isinstance(ticket, dict):
+            continue
+        poli_name = str(ticket.get("poliklinik") or "Poli Umum")
+        poli_info = POLIKLINIK_CONFIG.get(poli_name, {"prefix": "PL"})
+        prefix = poli_info["prefix"]
+        seq = int(ticket.get("queueSequence") or 0)
+        serving_seq = _serving_counter.get(prefix, 1)
+        serving_stat = _serving_status.get(prefix, "DIPANGGIL")
+
+        # Tiket masih aktif selama nomor antreannya belum terlewati dan belum berstatus SELESAI
+        is_still_active = seq > serving_seq or (
+            seq == serving_seq and serving_stat != "SELESAI"
+        )
+        if is_still_active:
+            return _refresh_existing_ticket(ticket)
+
+    return None
+
+
 def _generate_queue_ticket(
-    patient: dict[str, Any], requested_poli: str | None = None
+    patient: dict[str, Any],
+    requested_poli: str | None = None,
+    image_hash: str | None = None,
 ) -> dict[str, Any]:
+    person_id = str(patient.get("personId") or "").strip()
+    no_rm = str(patient.get("noRm") or person_id or "").strip()
+
+    # 1. Cegah dobel order: satu orang hanya boleh memiliki satu antrean aktif
+    existing_ticket = _find_existing_active_ticket(
+        no_rm=no_rm, person_id=person_id, image_hash=image_hash
+    )
+    if existing_ticket is not None:
+        return existing_ticket
+
+    # 2. Jika belum punya antrean aktif, terbitkan 1 tiket baru
     poli_name = requested_poli or patient.get("poliklinik") or "Poli Umum"
     poli_info = POLIKLINIK_CONFIG.get(
         poli_name,
@@ -316,7 +486,9 @@ def _generate_queue_ticket(
         _serving_counter[prefix] = serving_seq
 
     full_name = str(patient.get("fullName") or f"Pasien {prefix}-{seq:03d}")
-    no_rm = str(patient.get("noRm") or patient.get("personId") or f"RM-2026-{seq:03d}")
+    if not no_rm:
+        no_rm = f"RM-2026-{seq:03d}"
+
     _queue_patients.setdefault(prefix, {})[seq] = {
         "fullName": full_name,
         "noRm": no_rm,
@@ -333,7 +505,7 @@ def _generate_queue_ticket(
     )
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    return {
+    ticket = {
         "ticketId": f"TKT-{uuid.uuid4().hex[:8].upper()}",
         "queueNumber": queue_number,
         "queueSequence": seq,
@@ -351,13 +523,21 @@ def _generate_queue_ticket(
         "room": poli_info["room"],
         "allergies": allergies,
         "hasAllergyAlert": has_allergy,
-        "status": (
-            "DIPANGGIL"
-            if patients_ahead == 0
-            else "MENUNGGU"
-        ),
+        "status": "DIPANGGIL" if patients_ahead == 0 else "MENUNGGU",
         "issuedAt": now_iso,
+        "isExistingTicket": False,
     }
+
+    # Simpan tiket ke indeks aktif agar scan berikutnya dari orang/foto yang sama tidak dobel order
+    if no_rm:
+        _patient_active_tickets[no_rm.upper()] = ticket
+    if person_id:
+        _patient_active_tickets[person_id.upper()] = ticket
+    if image_hash:
+        _patient_active_tickets[f"IMG:{image_hash.upper()}"] = ticket
+
+    _save_queue_state()
+    return ticket
 
 
 def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
@@ -372,8 +552,9 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
     poli_info = POLIKLINIK_CONFIG.get(poliklinik, {})
 
     base_history = list(face.get("MedicalHistory") or [])
-    extra_history = _custom_medical_records.get(person_id, []) + _custom_medical_records.get(no_rm, [])
-    # Deduplicate while preserving order
+    extra_history = _custom_medical_records.get(
+        person_id, []
+    ) + _custom_medical_records.get(no_rm, [])
     seen_keys: set[str] = set()
     merged_history: list[dict[str, Any]] = []
     for item in extra_history + base_history:
@@ -403,34 +584,46 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record_attendance(
-    face_match: dict[str, Any], requested_poli: str | None = None
+    face_match: dict[str, Any],
+    requested_poli: str | None = None,
+    verification_method: str = "BIOMETRIC_FACE",
+    image_hash: str | None = None,
 ) -> dict[str, Any]:
     identity = _extract_identity_metadata(face_match)
     person_id = identity["personId"]
     similarity = identity["similarity"]
 
-    queue_ticket = _generate_queue_ticket(identity, requested_poli=requested_poli)
+    queue_ticket = _generate_queue_ticket(
+        identity, requested_poli=requested_poli, image_hash=image_hash
+    )
+    already_queued = bool(queue_ticket.get("isExistingTicket"))
     timestamp = queue_ticket["issuedAt"]
     attendance_id = str(uuid.uuid4())
 
-    item = {
-        "attendanceId": attendance_id,
-        "Timestamp": timestamp,
-        "ID": person_id,
-        "NoRM": identity["noRm"],
-        "FullName": identity["fullName"],
-        "Gender": identity["gender"],
-        "Allergies": identity["allergies"],
-        "Poliklinik": queue_ticket["poliklinik"],
-        "QueueNumber": queue_ticket["queueNumber"],
-        "Status": "QUEUE_ISSUED",
-        "Similarity": Decimal(str(round(similarity, 4))),
-    }
-    _get_attendance_table().put_item(Item=item)
+    # Hanya catat ke log kehadiran/antrean apabila ini adalah order baru (bukan scan berulang)
+    if not already_queued:
+        item = {
+            "attendanceId": attendance_id,
+            "Timestamp": timestamp,
+            "ID": person_id,
+            "NoRM": identity["noRm"],
+            "FullName": identity["fullName"],
+            "Gender": identity["gender"],
+            "Allergies": identity["allergies"],
+            "Poliklinik": queue_ticket["poliklinik"],
+            "QueueNumber": queue_ticket["queueNumber"],
+            "Status": "QUEUE_ISSUED",
+            "VerificationMethod": verification_method,
+            "Similarity": Decimal(str(round(similarity, 4))),
+        }
+        _get_attendance_table().put_item(Item=item)
+
     return {
         "attendanceId": attendance_id,
         "timestamp": timestamp,
         "queueTicket": queue_ticket,
+        "alreadyQueued": already_queued,
+        "verificationMethod": verification_method,
         **identity,
     }
 
@@ -485,6 +678,26 @@ def _enroll_face(payload: dict[str, Any], collection_id: str) -> dict[str, Any]:
         "Laki-laki" if gender in ("L", "Laki-laki") else "Perempuan"
     )
 
+    image_bytes = _decode_image(payload)
+    image_hash = hashlib.sha256(image_bytes).hexdigest()
+
+    # Cek apakah wajah pada foto ini sudah terdaftar sebelumnya untuk mencegah dobel akun / dobel order
+    existing_search = _get_rekognition_client().search_faces_by_image(
+        CollectionId=collection_id,
+        FaceMatchThreshold=_match_threshold(),
+        Image={"Bytes": image_bytes},
+        MaxFaces=1,
+    )
+    existing_matches = existing_search.get("FaceMatches", [])
+    if existing_matches:
+        matched_face = existing_matches[0].get("Face", {})
+        existing_name = matched_face.get("FullName") or matched_face.get("ExternalImageId") or "Pasien"
+        existing_rm = matched_face.get("NoRm") or matched_face.get("ExternalImageId") or "-"
+        raise ValueError(
+            f"Wajah pada foto ini sudah terdaftar atas nama {existing_name} ({existing_rm}). "
+            f"Satu orang hanya boleh memiliki satu akun & satu nomor antrean (silakan gunakan menu Pasien Lama)."
+        )
+
     raw_rm = str(
         payload.get("noRm") or payload.get("nim") or payload.get("personId") or ""
     ).strip()
@@ -494,7 +707,6 @@ def _enroll_face(payload: dict[str, Any], collection_id: str) -> dict[str, Any]:
         ch if (ch.isalnum() or ch in "_.-:") else "-" for ch in raw_rm
     )
 
-    image_bytes = _decode_image(payload)
     response = _get_rekognition_client().index_faces(
         CollectionId=collection_id,
         Image={"Bytes": image_bytes},
@@ -506,6 +718,26 @@ def _enroll_face(payload: dict[str, Any], collection_id: str) -> dict[str, Any]:
     records = response.get("FaceRecords", [])
     if not records:
         raise ValueError("Wajah pasien tidak terdeteksi pada foto yang dikirim")
+
+    # Jika ada extraImages (multi-angle enrollment), indeks juga sebagai sampel pose tambahan
+    extra_images = payload.get("extraImages")
+    poses_count = 1
+    if isinstance(extra_images, list):
+        for idx, extra_b64 in enumerate(extra_images[:3], start=2):
+            if isinstance(extra_b64, str) and extra_b64.strip():
+                try:
+                    extra_bytes = _decode_image({"image": extra_b64})
+                    _get_rekognition_client().index_faces(
+                        CollectionId=collection_id,
+                        Image={"Bytes": extra_bytes},
+                        ExternalImageId=f"{person_id}__pose{idx}",
+                        DetectionAttributes=["DEFAULT"],
+                        MaxFaces=1,
+                        QualityFilter="AUTO",
+                    )
+                    poses_count += 1
+                except Exception:
+                    pass
 
     face_info = records[0].get("Face", {})
     poliklinik = str(payload.get("poliklinik") or "Poli Umum").strip()
@@ -544,8 +776,11 @@ def _enroll_face(payload: dict[str, Any], collection_id: str) -> dict[str, Any]:
         "medicalHistory": initial_history,
         "faceId": face_info.get("FaceId"),
         "confidence": float(face_info.get("Confidence", 100.0)),
+        "enrolledPosesCount": poses_count,
     }
-    queue_ticket = _generate_queue_ticket(patient_data, requested_poli=poliklinik)
+    queue_ticket = _generate_queue_ticket(
+        patient_data, requested_poli=poliklinik, image_hash=image_hash
+    )
     return {
         **patient_data,
         "queueTicket": queue_ticket,
@@ -606,7 +841,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "success": True,
                     "status": "ENROLLED",
                     "message": (
-                        f"Pasien {enrolled['fullName']} ({enrolled['noRm']}) berhasil didaftarkan. "
+                        f"Pasien {enrolled['fullName']} ({enrolled['noRm']}) berhasil didaftarkan "
+                        f"({enrolled.get('enrolledPosesCount', 1)} sampel pose). "
                         f"Tiket Antrean: {enrolled['queueTicket']['queueNumber']}"
                     ),
                     **enrolled,
@@ -614,6 +850,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
 
         image_bytes = _decode_image(payload)
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
         result = _get_rekognition_client().search_faces_by_image(
             CollectionId=collection_id,
             FaceMatchThreshold=_match_threshold(),
@@ -633,29 +870,57 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         if payload.get("identifyOnly") is True:
             identity = _extract_identity_metadata(matches[0])
+            existing_ticket = _find_existing_active_ticket(
+                no_rm=identity["noRm"],
+                person_id=identity["personId"],
+                image_hash=image_hash,
+            )
             return _json_response(
                 200,
                 {
                     "success": True,
                     "status": "IDENTIFIED",
                     "message": f"Pasien Lama Dikenali: {identity['fullName']} ({identity['noRm']})",
+                    "alreadyQueued": existing_ticket is not None,
+                    **(
+                        {"queueTicket": existing_ticket}
+                        if existing_ticket is not None
+                        else {}
+                    ),
                     **identity,
                 },
             )
 
         requested_poli = payload.get("poliklinik")
-        attendance = _record_attendance(matches[0], requested_poli=requested_poli)
+        attendance = _record_attendance(
+            matches[0],
+            requested_poli=requested_poli,
+            image_hash=image_hash,
+        )
         ticket_no = attendance["queueTicket"]["queueNumber"]
         poli_name = attendance["queueTicket"]["poliklinik"]
+        already_queued = bool(attendance.get("alreadyQueued"))
+
+        if already_queued:
+            msg = (
+                f"Pasien {attendance['fullName']} ({attendance['noRm']}) sudah memiliki "
+                f"nomor antrean aktif {ticket_no} di {poli_name}. "
+                f"Satu pasien hanya dapat memiliki 1 antrean aktif (tidak boleh dobel order)."
+            )
+            status_code_label = "ALREADY_QUEUED"
+        else:
+            msg = (
+                f"Pasien lama {attendance['fullName']} ({attendance['noRm']}) terverifikasi. "
+                f"Tiket Antrean Otomatis {ticket_no} ({poli_name}) berhasil diterbitkan!"
+            )
+            status_code_label = "RECORDED"
+
         return _json_response(
             200,
             {
                 "success": True,
-                "status": "RECORDED",
-                "message": (
-                    f"Pasien lama {attendance['fullName']} ({attendance['noRm']}) terverifikasi. "
-                    f"Tiket Antrean Otomatis {ticket_no} ({poli_name}) berhasil diterbitkan!"
-                ),
+                "status": status_code_label,
+                "message": msg,
                 **attendance,
             },
         )

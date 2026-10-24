@@ -1,7 +1,7 @@
 {
   "collection_id_default": "attendance-faces",
   "match_threshold_default": 80.0,
-  "total_enrolled": 23,
+  "total_enrolled": 24,
   "subjects": [
     {
       "person_id": "MHS-2026-001",
@@ -637,6 +637,33 @@
       ],
       "enrolled_image": "images/enrolled/RM-2026-58DB.jpg",
       "positive_test_image": "images/enrolled/RM-2026-58DB.jpg"
+    },
+    {
+      "person_id": "RM-2026-A204",
+      "no_rm": "RM-2026-A204",
+      "nim": "RM-2026-A204",
+      "nik": "3621736528163297",
+      "full_name": "Candra hidayattuloh",
+      "gender": "L",
+      "gender_label": "Laki-laki",
+      "age": 21,
+      "blood_type": "B+",
+      "insurance": "Umum (Mandiri)",
+      "allergies": "tidak ada",
+      "chronic_conditions": "tidak ada",
+      "poliklinik": "Poli Kulit & Kelamin",
+      "dokter": "dr. Clara Wijaya, Sp.KK",
+      "medical_history": [
+        {
+          "date": "2026-10-24",
+          "poliklinik": "Poli Kulit & Kelamin",
+          "doctor": "dr. Clara Wijaya, Sp.KK",
+          "diagnosis": "batuk pusing",
+          "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
+        }
+      ],
+      "enrolled_image": "images/enrolled/RM-2026-A204.jpg",
+      "positive_test_image": "images/enrolled/RM-2026-A204.jpg"
     }
   ]
 }

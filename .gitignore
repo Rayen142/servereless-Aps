@@ -9,3 +9,4 @@ venv/
 .venv/
 *.py[cod]
 dataset/local_attendance_log.json
+dataset/queue_state.json

@@ -28,6 +28,7 @@ export interface QueueTicket {
   readonly hasAllergyAlert: boolean;
   readonly status: string;
   readonly issuedAt: string;
+  readonly isExistingTicket?: boolean;
 }
 
 export interface RecognizedPerson {
@@ -46,6 +47,7 @@ export interface RecognizedPerson {
   readonly dokter: string;
   readonly medicalHistory: readonly MedicalHistoryItem[];
   readonly similarity: number;
+  readonly alreadyQueued?: boolean;
   readonly queueTicket?: QueueTicket;
 }
 
@@ -68,6 +70,7 @@ export interface EnrollFaceInput {
   readonly poliklinik?: string;
   readonly medicalHistoryNotes?: string;
   readonly image: string;
+  readonly extraImages?: readonly string[];
 }
 
 export interface EnrollFaceResult {
@@ -81,6 +84,7 @@ export interface UseAttendanceVerificationResult {
   readonly feedback: VerificationFeedback | null;
   readonly liveIdentity: RecognizedPerson | null;
   readonly submit: (image: string, poliklinik?: string) => Promise<void>;
+  readonly lookupManual: (query: string, poliklinik?: string) => Promise<boolean>;
   readonly identifyLive: (image: string) => Promise<void>;
   readonly clearLiveIdentity: () => void;
   readonly enrollFace: (input: EnrollFaceInput) => Promise<EnrollFaceResult>;
@@ -102,6 +106,7 @@ const MESSAGES = {
   notConfigured: 'Endpoint verifikasi belum dikonfigurasi.',
   recorded: 'Pasien lama terverifikasi & tiket antrean otomatis diterbitkan.',
   notRecognized: 'Wajah pasien belum terdaftar di database Rekam Medis RS.',
+  notFound: 'Data pasien dengan NIK / No. RM tersebut tidak ditemukan.',
   unreachable: 'Tidak dapat terhubung ke layanan biometrik RS.',
   enrollFailed: 'Gagal mendaftarkan pasien baru.',
 } as const;
@@ -184,8 +189,9 @@ const parseQueueTicket = (raw: unknown): QueueTicket | undefined => {
       typeof t.allergies === 'string' ? t.allergies : 'Tidak Ada Alergi',
     hasAllergyAlert: t.hasAllergyAlert === true,
     status:
-      typeof t.status === 'string' ? t.status : 'MENUNGGU',
+      typeof t.status === 'string' ? t.status : 'MENUNGGU PANGGILAN POLI',
     issuedAt: typeof t.issuedAt === 'string' ? t.issuedAt : '',
+    isExistingTicket: t.isExistingTicket === true,
   };
 };
 
@@ -229,6 +235,8 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
   const dokter = typeof record.dokter === 'string' ? record.dokter : '-';
   const medicalHistory = parseMedicalHistory(record.medicalHistory);
   const queueTicket = parseQueueTicket(record.queueTicket);
+  const alreadyQueued =
+    record.alreadyQueued === true || queueTicket?.isExistingTicket === true;
   const similarity =
     typeof record.similarity === 'number'
       ? record.similarity
@@ -257,6 +265,7 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
             dokter,
             medicalHistory,
             similarity,
+            alreadyQueued,
             queueTicket,
           }
         : undefined,
@@ -340,6 +349,56 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
     [],
   );
 
+  const lookupManual = useCallback(
+    async (query: string, poliklinik?: string): Promise<boolean> => {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      if (!apiUrl) {
+        setFeedback({ type: 'error', message: MESSAGES.notConfigured });
+        return false;
+      }
+
+      const lookupUrl = apiUrl.replace(/\/verify\/?$/, '/lookup');
+      setIsSubmitting(true);
+      setFeedback(null);
+
+      try {
+        const response = await fetch(lookupUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'lookup_manual',
+            query: query.trim(),
+            poliklinik,
+          }),
+        });
+        const body: unknown = await response.json().catch(() => null);
+        const payload = parseVerifyResponse(body);
+
+        if (response.ok && payload.success && payload.person) {
+          setLiveIdentity(payload.person);
+          setFeedback({
+            type: 'success',
+            message: payload.message ?? MESSAGES.recorded,
+            person: payload.person,
+          });
+          return true;
+        }
+
+        setFeedback({
+          type: 'error',
+          message: payload.message ?? MESSAGES.notFound,
+        });
+        return false;
+      } catch {
+        setFeedback({ type: 'error', message: MESSAGES.unreachable });
+        return false;
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [],
+  );
+
   const identifyLive = useCallback(async (image: string): Promise<void> => {
     if (liveInFlightRef.current) {
       return;
@@ -362,7 +421,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
       if (response.ok && payload.success && payload.person) {
         setLiveIdentity((prev) => ({
           ...payload.person!,
-          queueTicket: prev?.queueTicket,
+          queueTicket: payload.person!.queueTicket ?? prev?.queueTicket,
         }));
       }
     } catch {
@@ -402,6 +461,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
             poliklinik: input.poliklinik,
             medicalHistoryNotes: input.medicalHistoryNotes,
             image: input.image,
+            extraImages: input.extraImages,
           }),
         });
         const body: unknown = await response.json().catch(() => null);
@@ -476,6 +536,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
     feedback,
     liveIdentity,
     submit,
+    lookupManual,
     identifyLive,
     clearLiveIdentity,
     enrollFace,

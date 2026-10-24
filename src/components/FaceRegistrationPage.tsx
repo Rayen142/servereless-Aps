@@ -53,6 +53,12 @@ const EMPTY_FORM: FormState = {
   complaint: '',
 };
 
+const POSE_SLOTS = [
+  { index: 0, label: 'Pose 1 · Depan', hint: 'Wajib (Utama)' },
+  { index: 1, label: 'Pose 2 · Serong Kiri', hint: 'Opsional (+Akurasi)' },
+  { index: 2, label: 'Pose 3 · Serong Kanan', hint: 'Opsional (+Akurasi)' },
+] as const;
+
 const inputClass =
   'h-9 w-full rounded-xl border border-neutral-200 bg-white px-3 text-xs text-neutral-900 outline-none transition placeholder:text-neutral-400 focus:border-neutral-900';
 
@@ -84,13 +90,20 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const photo = uploadedImage ?? frame.image;
+  const [posePhotos, setPosePhotos] = useState<[string | null, string | null, string | null]>([
+    null,
+    null,
+    null,
+  ]);
+  const [activeSlot, setActiveSlot] = useState<0 | 1 | 2>(0);
 
-  const camera = useWebCamera({ enabled: photo === null });
+  const currentSlotPhoto = posePhotos[activeSlot];
+  const capturedPoses = posePhotos.filter((p): p is string => Boolean(p));
+
+  const camera = useWebCamera({ enabled: currentSlotPhoto === null });
   const detection = useFaceDetection({
     videoRef: camera.videoRef,
-    enabled: camera.status === 'ready' && photo === null,
+    enabled: camera.status === 'ready' && currentSlotPhoto === null,
     onHoldComplete: () => undefined,
   });
 
@@ -119,8 +132,31 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
     void refreshCount();
   }, [refreshCount]);
 
-  const resetPhoto = () => {
-    setUploadedImage(null);
+  const setSlotImage = (slot: 0 | 1 | 2, dataUrl: string | null) => {
+    setPosePhotos((prev) => {
+      const next: [string | null, string | null, string | null] = [...prev];
+      next[slot] = dataUrl;
+      return next;
+    });
+  };
+
+  const handleCaptureCurrentSlot = () => {
+    const shot = frame.capture(camera.videoRef.current);
+    if (shot) {
+      setSlotImage(activeSlot, shot);
+      frame.discard();
+    }
+  };
+
+  const resetCurrentSlot = () => {
+    setSlotImage(activeSlot, null);
+    frame.discard();
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const resetAllPhotos = () => {
+    setPosePhotos([null, null, null]);
+    setActiveSlot(0);
     frame.discard();
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -132,7 +168,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
     reader.onload = () => {
       if (typeof reader.result === 'string') {
         frame.discard();
-        setUploadedImage(reader.result);
+        setSlotImage(activeSlot, reader.result);
       }
     };
     reader.readAsDataURL(file);
@@ -147,13 +183,14 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
       nameInputRef.current?.focus();
       return;
     }
-    if (!photo) {
-      setError('Ambil atau unggah foto wajah pasien terlebih dahulu.');
+    if (capturedPoses.length === 0) {
+      setError('Ambil atau unggah minimal 1 foto wajah pasien (Pose Depan) terlebih dahulu.');
       return;
     }
 
     setIsSaving(true);
     const age = Number.parseInt(form.age, 10);
+    const [primaryImage, ...extraImages] = capturedPoses;
     const result = await verification.enrollFace({
       fullName: form.fullName.trim(),
       gender: form.gender,
@@ -166,7 +203,8 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
       chronicConditions: form.chronicConditions.trim() || 'Tidak Ada',
       medicalHistoryNotes:
         form.complaint.trim() || 'Pendaftaran Pasien Baru & Pemeriksaan Awal',
-      image: photo,
+      image: primaryImage,
+      extraImages,
     });
     setIsSaving(false);
 
@@ -177,59 +215,116 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
 
     setSaved(result.person ?? null);
     setForm(EMPTY_FORM);
-    resetPhoto();
+    resetAllPhotos();
     void refreshCount();
     nameInputRef.current?.focus();
   };
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-start">
-      {/* Kolom Kiri: Kamera */}
+      {/* Kolom Kiri: Kamera Multi-Pose */}
       <section className="space-y-4">
         <div className="rounded-2xl border border-neutral-200/80 bg-white p-4 space-y-3.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-neutral-900">
-              Foto Wajah Pasien
-            </span>
+            <div>
+              <span className="text-xs font-semibold text-neutral-900">
+                Perekaman Wajah Multi-Pose
+              </span>
+              <p className="text-[11px] text-neutral-500">
+                Ambil 1 foto utama atau hingga 3 sudut wajah untuk akurasi pengenalan maksimal
+              </p>
+            </div>
             {patientCount !== null && (
-              <span className="text-xs text-neutral-400">
-                {patientCount} pasien terdaftar
+              <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] font-medium text-neutral-600">
+                {patientCount} sampel aktif
               </span>
             )}
+          </div>
+
+          {/* Pemilih Slot Multi-Pose */}
+          <div className="grid grid-cols-3 gap-2">
+            {POSE_SLOTS.map((slot) => {
+              const slotImg = posePhotos[slot.index];
+              const isSelected = activeSlot === slot.index;
+              return (
+                <button
+                  key={slot.index}
+                  type="button"
+                  onClick={() => setActiveSlot(slot.index)}
+                  className={`flex items-center gap-2 rounded-xl border p-2 text-left transition ${
+                    isSelected
+                      ? 'border-neutral-900 bg-neutral-900 text-white'
+                      : slotImg
+                        ? 'border-emerald-200 bg-emerald-50/50 text-neutral-900 hover:border-emerald-300'
+                        : 'border-neutral-200 bg-neutral-50/70 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-black/10 bg-neutral-200">
+                    {slotImg ? (
+                      <img
+                        src={slotImg}
+                        alt={slot.label}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-[10px] font-bold text-neutral-500">
+                        #{slot.index + 1}
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[11px] font-semibold">
+                      {slot.label.replace(/^Pose \d · /, '')}
+                    </p>
+                    <p
+                      className={`truncate text-[10px] ${
+                        isSelected
+                          ? 'text-neutral-300'
+                          : slotImg
+                            ? 'font-medium text-emerald-700'
+                            : 'text-neutral-400'
+                      }`}
+                    >
+                      {slotImg ? 'Tersimpan ✓' : slot.hint}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
           </div>
 
           <CameraView
             camera={camera}
             detection={detection}
-            capturedImage={photo}
+            capturedImage={currentSlotPhoto}
             isFlashing={frame.isFlashing}
             faceLabel={
               detection.trackingBox
-                ? form.fullName.trim() || 'Pasien Baru'
+                ? `${form.fullName.trim() || 'Pasien Baru'} (${POSE_SLOTS[activeSlot].label})`
                 : null
             }
           />
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
             <div className="flex items-center gap-2">
-              {photo ? (
+              {currentSlotPhoto ? (
                 <button
                   type="button"
-                  onClick={resetPhoto}
+                  onClick={resetCurrentSlot}
                   className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
                 >
                   <RefreshIcon width={13} height={13} />
-                  Ambil Ulang
+                  Ulangi {POSE_SLOTS[activeSlot].label.split(' · ')[0]}
                 </button>
               ) : (
                 <button
                   type="button"
-                  onClick={() => frame.capture(camera.videoRef.current)}
+                  onClick={handleCaptureCurrentSlot}
                   disabled={camera.status !== 'ready'}
                   className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
                 >
                   <CameraIcon width={13} height={13} />
-                  Ambil Foto
+                  Ambil {POSE_SLOTS[activeSlot].label.split(' · ')[0]}
                 </button>
               )}
 
@@ -244,11 +339,21 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
                   className="hidden"
                 />
               </label>
+
+              {currentSlotPhoto && activeSlot < 2 && !posePhotos[(activeSlot + 1) as 1 | 2] && (
+                <button
+                  type="button"
+                  onClick={() => setActiveSlot((activeSlot + 1) as 1 | 2)}
+                  className="inline-flex h-8 items-center gap-1 rounded-full bg-emerald-50 px-3 text-xs font-medium text-emerald-800 transition hover:bg-emerald-100"
+                >
+                  + Tambah Pose {activeSlot + 2}
+                </button>
+              )}
             </div>
 
             <span className="text-xs text-neutral-500">
-              {photo
-                ? 'Foto siap disimpan'
+              {capturedPoses.length > 0
+                ? `${capturedPoses.length}/3 pose siap disimpan`
                 : detection.trackingBox
                   ? 'Wajah terdeteksi'
                   : 'Hadapkan wajah'}
@@ -421,7 +526,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
               onClick={() => {
                 setForm(EMPTY_FORM);
                 setError(null);
-                resetPhoto();
+                resetAllPhotos();
               }}
               className="text-xs text-neutral-500 hover:text-neutral-800"
             >
@@ -443,7 +548,9 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
                 disabled={isSaving}
                 className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-50"
               >
-                {isSaving ? 'Menyimpan…' : 'Simpan & Ambil Antrean'}
+                {isSaving
+                  ? 'Menyimpan…'
+                  : `Simpan (${capturedPoses.length || 1} Pose) & Ambil Antrean`}
               </button>
             </div>
           </div>
