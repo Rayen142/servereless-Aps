@@ -77,7 +77,23 @@ export interface AttendanceLogRecord {
   readonly Similarity: number;
 }
 
+export interface SqliteDatabaseDiagnostics {
+  readonly engine: string;
+  readonly dbPath: string;
+  readonly sizeKb?: number;
+  readonly sizeKB?: number;
+  readonly journalMode: string;
+  readonly tables: {
+    readonly patients: number;
+    readonly medical_records: number;
+    readonly attendance_logs: number;
+    readonly poli_queues: number;
+    readonly active_queue_slots: number;
+  };
+}
+
 export interface HospitalAnalyticsData {
+  readonly database?: SqliteDatabaseDiagnostics;
   readonly evaluation: BiometricEvaluationReport;
   readonly totalRegisteredPatients: number;
   readonly totalAttendanceLogs: number;

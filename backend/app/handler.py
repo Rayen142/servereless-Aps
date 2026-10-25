@@ -173,6 +173,18 @@ def _save_queue_state_to_dynamodb(prefix: str | None = None) -> None:
 
 def _save_queue_state(prefix: str | None = None) -> None:
     try:
+        from app import database
+        database.save_queue_state_to_sqlite(
+            _queue_counter,
+            _serving_counter,
+            _serving_status,
+            _queue_patients,
+            _patient_active_tickets,
+            POLIKLINIK_CONFIG,
+        )
+    except Exception:
+        pass
+    try:
         QUEUE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         serializable_patients = {
             prefix_key: {str(k): v for k, v in pmap.items()}
@@ -195,6 +207,23 @@ def _save_queue_state(prefix: str | None = None) -> None:
 
 
 def _load_queue_state() -> None:
+    try:
+        from app import database
+        db_state = database.load_queue_state_from_sqlite()
+        if db_state:
+            if db_state.get("queue_counter"):
+                _queue_counter.update(db_state["queue_counter"])
+            if db_state.get("serving_counter"):
+                _serving_counter.update(db_state["serving_counter"])
+            if db_state.get("serving_status"):
+                _serving_status.update(db_state["serving_status"])
+            if db_state.get("queue_patients"):
+                _queue_patients.update(db_state["queue_patients"])
+            if db_state.get("patient_active_tickets"):
+                _patient_active_tickets.update(db_state["patient_active_tickets"])
+            return
+    except Exception:
+        pass
     if not QUEUE_STATE_PATH.exists():
         return
     try:

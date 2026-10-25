@@ -103,6 +103,13 @@ _CACHED_EVALUATION_REPORT: dict[str, Any] | None = None
 
 
 def _load_subjects_map() -> dict[str, dict[str, Any]]:
+    try:
+        from app import database
+        db_map = database.get_all_patients_map()
+        if db_map:
+            return db_map
+    except Exception:
+        pass
     if not METADATA_JSON_PATH.exists():
         return {}
     try:
@@ -122,6 +129,13 @@ def _format_gender(gender_val: str) -> str:
 
 
 def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from app import database
+        saved = database.upsert_patient(resp_payload)
+        if saved:
+            return saved
+    except Exception:
+        pass
     person_id = resp_payload["personId"]
     gender_label = resp_payload.get("gender", "Laki-laki")
     gender_code = "L" if gender_label in ("L", "Laki-laki") else "P"
@@ -207,6 +221,11 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
 def _append_medical_history_to_metadata(
     person_id: str, no_rm: str, new_entry: dict[str, str]
 ) -> list[dict[str, Any]]:
+    try:
+        from app import database
+        return database.insert_medical_record(person_id, no_rm, new_entry)
+    except Exception:
+        pass
     if not METADATA_JSON_PATH.exists():
         return [new_entry]
     try:
@@ -793,6 +812,12 @@ def _configure_local_handler() -> None:
         serializable_item = {
             k: float(v) if hasattr(v, "as_tuple") else v for k, v in Item.items()
         }
+        try:
+            from app import database
+            if serializable_item.get("Status") != "QUEUE_STATE":
+                database.insert_attendance_log(serializable_item)
+        except Exception:
+            pass
         records.insert(0, serializable_item)
         ATTENDANCE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         ATTENDANCE_LOG_PATH.write_text(
@@ -831,6 +856,11 @@ def _configure_local_handler() -> None:
 
     handler._rekognition_client = mock_rekognition
     handler._dynamodb_resource = mock_dynamodb
+    try:
+        from app import database
+        database.init_sqlite_db()
+    except Exception as err:
+        print(f"[SQLITE-WARN] Inisialisasi awal database gagal: {err}")
 
 
 class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
@@ -857,6 +887,21 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         clean_path = parsed_url.path.rstrip("/")
         query_params = urllib.parse.parse_qs(parsed_url.query)
+
+        if clean_path == "/v1/attendance/db-status":
+            try:
+                from app import database
+                diag = database.get_database_diagnostics()
+            except Exception as err:
+                diag = {"engine": "SQLite", "status": "ERROR", "error": str(err)}
+            self._send_lambda_response(
+                {
+                    "statusCode": 200,
+                    "headers": handler.CORS_HEADERS,
+                    "body": json.dumps(diag),
+                }
+            )
+            return
 
         if clean_path in ("/v1/attendance/queues", "/queues", "/v1/attendance/queue", "/queue"):
             poli_param = (query_params.get("poliklinik") or query_params.get("poli") or [None])[0]
@@ -894,18 +939,29 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
             force_refresh = "refresh=1" in self.path
             eval_report = _run_biometric_evaluation(force_refresh=force_refresh)
             logs = []
-            if ATTENDANCE_LOG_PATH.exists():
-                try:
-                    logs = json.loads(ATTENDANCE_LOG_PATH.read_text(encoding="utf-8"))
-                except Exception:
-                    logs = []
+            try:
+                from app import database
+                logs = database.get_attendance_logs(limit=100)
+            except Exception:
+                if ATTENDANCE_LOG_PATH.exists():
+                    try:
+                        logs = json.loads(ATTENDANCE_LOG_PATH.read_text(encoding="utf-8"))
+                    except Exception:
+                        logs = []
             subjects_map = _load_subjects_map()
+            db_diag = None
+            try:
+                from app import database
+                db_diag = database.get_database_diagnostics()
+            except Exception:
+                pass
             self._send_lambda_response(
                 {
                     "statusCode": 200,
                     "headers": handler.CORS_HEADERS,
                     "body": json.dumps(
                         {
+                            "database": db_diag,
                             "evaluation": eval_report,
                             "totalRegisteredPatients": len(subjects_map),
                             "totalAttendanceLogs": len(logs),
@@ -919,11 +975,15 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
 
         if clean_path == "/v1/attendance/logs":
             logs = []
-            if ATTENDANCE_LOG_PATH.exists():
-                try:
-                    logs = json.loads(ATTENDANCE_LOG_PATH.read_text(encoding="utf-8"))
-                except Exception:
-                    logs = []
+            try:
+                from app import database
+                logs = database.get_attendance_logs(limit=150)
+            except Exception:
+                if ATTENDANCE_LOG_PATH.exists():
+                    try:
+                        logs = json.loads(ATTENDANCE_LOG_PATH.read_text(encoding="utf-8"))
+                    except Exception:
+                        logs = []
             self._send_lambda_response(
                 {
                     "statusCode": 200,

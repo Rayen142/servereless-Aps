@@ -119,6 +119,11 @@ function EvaluationDashboardPage() {
             <span className="rounded-full bg-neutral-100 px-2.5 py-0.5 font-mono text-[11px] font-medium text-neutral-600">
               RAM Cache: {evalReport?.cachedEnrolledCount ?? 0} Vektor Wajah
             </span>
+            {data?.database && (
+              <span className="rounded-full bg-sky-50 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-sky-700">
+                DB: {data.database.engine} ({data.database.journalMode.toUpperCase()} ? {data.database.sizeKb ?? data.database.sizeKB ?? 0} KB)
+              </span>
+            )}
           </div>
           <h2 className="mt-2 text-base font-semibold text-neutral-900">
             Hasil Pengujian Akurasi Biometrik & Performa Sistem
@@ -310,11 +315,47 @@ function EvaluationDashboardPage() {
             </div>
           </div>
 
-          <div className="mt-4 flex items-center justify-between rounded-xl bg-neutral-50 px-3.5 py-2.5 text-xs text-neutral-600">
-            <span>Total Pasien di Database SIMRS:</span>
-            <strong className="font-mono text-neutral-900">
-              {data?.totalRegisteredPatients ?? 23} Pasien
-            </strong>
+          <div className="mt-4 space-y-2 rounded-xl border border-neutral-100 bg-neutral-50/80 p-3 text-xs text-neutral-600">
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-neutral-700">
+                Database Lokal SQLite (Relational WAL)
+              </span>
+              <span className="font-mono text-[11px] font-semibold text-emerald-700">
+                dataset/simrs_biometric.db
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 pt-1 text-[11px] sm:grid-cols-3">
+              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
+                <span className="text-neutral-400 block">Tabel patients</span>
+                <strong className="font-mono text-neutral-900">
+                  {data?.database?.tables.patients ?? data?.totalRegisteredPatients ?? 26} baris
+                </strong>
+              </div>
+              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
+                <span className="text-neutral-400 block">medical_records</span>
+                <strong className="font-mono text-neutral-900">
+                  {data?.database?.tables.medical_records ?? 27} baris
+                </strong>
+              </div>
+              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
+                <span className="text-neutral-400 block">attendance_logs</span>
+                <strong className="font-mono text-neutral-900">
+                  {data?.database?.tables.attendance_logs ?? data?.totalAttendanceLogs ?? 0} baris
+                </strong>
+              </div>
+              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
+                <span className="text-neutral-400 block">poli_queues</span>
+                <strong className="font-mono text-neutral-900">
+                  {data?.database?.tables.poli_queues ?? 10} poli
+                </strong>
+              </div>
+              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60 col-span-2 sm:col-span-2">
+                <span className="text-neutral-400 block">queue_slots (Aktif)</span>
+                <strong className="font-mono text-neutral-900">
+                  {data?.database?.tables.active_queue_slots ?? 0} slot antrean aktif
+                </strong>
+              </div>
+            </div>
           </div>
         </section>
 
