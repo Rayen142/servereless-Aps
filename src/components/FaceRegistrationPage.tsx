@@ -20,6 +20,7 @@ import {
   CameraIcon,
   CheckIcon,
   RefreshIcon,
+  ShieldCheckIcon,
   UploadIcon,
 } from './icons';
 
@@ -30,6 +31,7 @@ interface FaceRegistrationPageProps {
 interface FormState {
   fullName: string;
   gender: 'Laki-laki' | 'Perempuan';
+  birthDate: string;
   nik: string;
   age: string;
   bloodType: string;
@@ -38,19 +40,22 @@ interface FormState {
   allergies: string;
   chronicConditions: string;
   complaint: string;
+  consentAccepted: boolean;
 }
 
 const EMPTY_FORM: FormState = {
   fullName: '',
   gender: 'Laki-laki',
+  birthDate: '1995-01-01',
   nik: '',
-  age: '',
+  age: '31',
   bloodType: 'O+',
   insurance: 'BPJS Kesehatan',
   poliklinik: 'Poli Umum',
   allergies: '',
   chronicConditions: '',
   complaint: '',
+  consentAccepted: false,
 };
 
 const POSE_SLOTS = [
@@ -108,6 +113,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
   });
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [showConsentClause, setShowConsentClause] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<RecognizedPerson | null>(null);
@@ -124,7 +130,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
       const data = (await resp.json()) as { count?: number };
       if (typeof data.count === 'number') setPatientCount(data.count);
     } catch {
-      /* abaikan */
+      /* abaikan jika server sedang dimuat */
     }
   }, []);
 
@@ -174,6 +180,14 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
     reader.readAsDataURL(file);
   };
 
+  const handleBirthDateChange = (val: string) => {
+    update('birthDate', val);
+    const year = Number.parseInt(val.slice(0, 4), 10);
+    if (Number.isFinite(year) && year >= 1900 && year <= 2026) {
+      update('age', String(Math.max(0, 2026 - year)));
+    }
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -187,13 +201,22 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
       setError('Ambil atau unggah minimal 1 foto wajah pasien (Pose Depan) terlebih dahulu.');
       return;
     }
+    if (!form.consentAccepted) {
+      setError(
+        'Persetujuan pemrosesan data biometrik & rekam medis (UU PDP No. 27/2022) wajib dicentang sebelum pendaftaran.',
+      );
+      return;
+    }
 
     setIsSaving(true);
     const age = Number.parseInt(form.age, 10);
     const [primaryImage, ...extraImages] = capturedPoses;
+    const consentTimestamp = new Date().toISOString();
+
     const result = await verification.enrollFace({
       fullName: form.fullName.trim(),
       gender: form.gender,
+      birthDate: form.birthDate || '1995-01-01',
       nik: form.nik.trim() || undefined,
       age: Number.isFinite(age) ? age : undefined,
       bloodType: form.bloodType,
@@ -202,9 +225,11 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
       allergies: form.allergies.trim() || 'Tidak Ada Alergi',
       chronicConditions: form.chronicConditions.trim() || 'Tidak Ada',
       medicalHistoryNotes:
-        form.complaint.trim() || 'Pendaftaran Pasien Baru & Pemeriksaan Awal',
+        form.complaint.trim() || 'Pendaftaran Pasien Baru & Pemeriksaan Awal (Z00.0)',
       image: primaryImage,
       extraImages,
+      consentAccepted: true,
+      consentTimestamp,
     });
     setIsSaving(false);
 
@@ -370,7 +395,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
                 </span>
                 <div>
                   <p className="font-semibold text-emerald-950">
-                    Pasien berhasil didaftarkan
+                    Pasien berhasil didaftarkan & Persetujuan UU PDP Tercatat
                   </p>
                   <p className="mt-0.5 text-emerald-800">
                     {saved.fullName} (<span className="font-mono">{saved.noRm}</span>) ·
@@ -390,12 +415,18 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
         )}
       </section>
 
-      {/* Kolom Kanan: Formulir Pendaftaran Minimalis */}
+      {/* Kolom Kanan: Formulir Pendaftaran Minimalis + Informed Consent UU PDP */}
       <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">
         <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
-          <p className="text-xs font-semibold text-neutral-900">
-            Data Identitas & Medis Pasien
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-neutral-900">
+              Data Identitas & Medis Pasien
+            </p>
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+              <ShieldCheckIcon width={11} height={11} />
+              Kepatuhan UU PDP & RME
+            </span>
+          </div>
 
           <Field label="Nama Lengkap *">
             <input
@@ -408,7 +439,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
             />
           </Field>
 
-          <div className="grid grid-cols-3 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <Field label="Jenis Kelamin">
               <select
                 value={form.gender}
@@ -420,6 +451,15 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
                 <option value="Laki-laki">Laki-laki</option>
                 <option value="Perempuan">Perempuan</option>
               </select>
+            </Field>
+
+            <Field label="Tanggal Lahir">
+              <input
+                type="date"
+                value={form.birthDate}
+                onChange={(e) => handleBirthDateChange(e.target.value)}
+                className={inputClass}
+              />
             </Field>
 
             <Field label="Usia (th)">
@@ -448,7 +488,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
           </div>
 
           <div className="grid grid-cols-2 gap-2.5">
-            <Field label="NIK" hint="16 digit">
+            <Field label="NIK" hint="16 digit (IHS SATUSEHAT)">
               <input
                 value={form.nik}
                 onChange={(e) =>
@@ -460,7 +500,7 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
               />
             </Field>
 
-            <Field label="Jaminan">
+            <Field label="Jaminan Kesehatan">
               <select
                 value={form.insurance}
                 onChange={(e) => update('insurance', e.target.value)}
@@ -509,10 +549,66 @@ function FaceRegistrationPage({ onGoToAttendance }: FaceRegistrationPageProps) {
             <input
               value={form.complaint}
               onChange={(e) => update('complaint', e.target.value)}
-              placeholder="Contoh: Pemeriksaan tekanan darah & keluhan pusing"
+              placeholder="Contoh: Pemeriksaan tekanan darah & keluhan pusing (I10)"
               className={inputClass}
             />
           </Field>
+
+          {/* Kotak Persetujuan Eksplisit (Informed Consent UU PDP No. 27/2022 & Permenkes 24/2022) */}
+          <div
+            className={`rounded-xl border p-3.5 text-xs transition ${
+              form.consentAccepted
+                ? 'border-emerald-200 bg-emerald-50/50'
+                : 'border-neutral-200 bg-neutral-50/80'
+            }`}
+          >
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                checked={form.consentAccepted}
+                onChange={(e) => update('consentAccepted', e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-neutral-300 accent-neutral-900"
+              />
+              <span className="leading-relaxed text-neutral-700">
+                <strong className="font-semibold text-neutral-900">
+                  Persetujuan Pemrosesan Data Pribadi Spesifik (UU PDP No. 27/2022):
+                </strong>{' '}
+                Pasien telah membaca, memahami, dan menyetujui perekaman fitur biometrik wajah serta penyimpanan Rekam Medis Elektronik (RME) untuk keperluan identifikasi layanan kesehatan di RSUD SIMRS Biometrik.
+              </span>
+            </label>
+
+            <div className="mt-2 flex items-center justify-between pl-6">
+              <button
+                type="button"
+                onClick={() => setShowConsentClause((v) => !v)}
+                className="text-[11px] font-medium text-neutral-600 underline hover:text-neutral-900"
+              >
+                {showConsentClause
+                  ? 'Sembunyikan Rincian Klausul Hukum'
+                  : 'Lihat Rincian Klausul UU PDP & Permenkes RME'}
+              </button>
+              <span className="font-mono text-[10px] text-neutral-400">
+                Pasal 20 & Pasal 22 UU 27/2022
+              </span>
+            </div>
+
+            {showConsentClause && (
+              <div className="mt-2.5 space-y-1.5 rounded-lg border border-neutral-200/80 bg-white p-3 text-[11px] leading-relaxed text-neutral-600">
+                <p>
+                  <strong>1. Pembatasan Tujuan:</strong> Citra dan vektor deskriptor wajah (CLAHE + LBPH + HOG + ORB) hanya diproses untuk verifikasi kehadiran rawat jalan otomatis dan pencegahan duplikasi tiket antrean.
+                </p>
+                <p>
+                  <strong>2. Keamanan & Penyimpanan:</strong> Data disimpan secara terisolasi pada basis data relasional SIMRS (SQLite WAL / Cloud DynamoDB) sesuai standar Rekam Medis Elektronik (Permenkes No. 24 Tahun 2022).
+                </p>
+                <p>
+                  <strong>3. Standar Interoperabilitas:</strong> Data kunjungan (Encounter) dan diagnosis (Condition ICD-10) diformat mengikuti standar HL7 FHIR R4 SATUSEHAT Kementerian Kesehatan RI.
+                </p>
+                <p>
+                  <strong>4. Hak Subjek Data:</strong> Sesuai UU PDP No. 27 Tahun 2022, pasien berhak menarik kembali persetujuan (opt-out) atau meminta penghapusan sampel biometrik melalui loket Rekam Medis.
+                </p>
+              </div>
+            )}
+          </div>
 
           {error && (
             <p className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600">

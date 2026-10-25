@@ -2,6 +2,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -12,11 +13,13 @@ from typing import Any
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+logger = logging.getLogger("simrs.handler")
+
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 DEFAULT_MATCH_THRESHOLD = 80.0
 CORS_HEADERS = {
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "OPTIONS,POST,GET",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Requested-With,*",
+    "Access-Control-Allow-Methods": "OPTIONS,POST,GET,PUT,DELETE",
     "Access-Control-Allow-Origin": "*",
     "Content-Type": "application/json",
 }
@@ -167,8 +170,8 @@ def _save_queue_state_to_dynamodb(prefix: str | None = None) -> None:
                 "Status": "QUEUE_STATE",
             }
             table.put_item(Item=item)
-    except Exception:
-        pass
+    except Exception as err:
+        logger.warning("Gagal menyinkronkan state antrean ke DynamoDB: %s", err)
 
 
 def _save_queue_state(prefix: str | None = None) -> None:
@@ -182,8 +185,8 @@ def _save_queue_state(prefix: str | None = None) -> None:
             _patient_active_tickets,
             POLIKLINIK_CONFIG,
         )
-    except Exception:
-        pass
+    except Exception as err:
+        logger.error("Gagal menyimpan state antrean ke SQLite: %s", err)
     try:
         QUEUE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         serializable_patients = {
@@ -201,8 +204,8 @@ def _save_queue_state(prefix: str | None = None) -> None:
         QUEUE_STATE_PATH.write_text(
             json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    except Exception:
-        pass
+    except Exception as err:
+        logger.warning("Gagal menyimpan cadangan antrean ke queue_state.json: %s", err)
     _save_queue_state_to_dynamodb(prefix)
 
 
@@ -222,8 +225,8 @@ def _load_queue_state() -> None:
             if db_state.get("patient_active_tickets"):
                 _patient_active_tickets.update(db_state["patient_active_tickets"])
             return
-    except Exception:
-        pass
+    except Exception as err:
+        logger.warning("Gagal memuat state antrean dari SQLite, beralih ke JSON: %s", err)
     if not QUEUE_STATE_PATH.exists():
         return
     try:
@@ -249,8 +252,8 @@ def _load_queue_state() -> None:
             for k, v in raw["patient_active_tickets"].items():
                 if isinstance(v, dict):
                     _patient_active_tickets[str(k)] = v
-    except Exception:
-        pass
+    except Exception as err:
+        logger.warning("Gagal membaca file queue_state.json: %s", err)
 
 
 _load_queue_state()
@@ -813,8 +816,8 @@ def _enroll_face(payload: dict[str, Any], collection_id: str) -> dict[str, Any]:
                         QualityFilter="AUTO",
                     )
                     poses_count += 1
-                except Exception:
-                    pass
+                except Exception as err:
+                    logger.warning("Gagal mengindeks pose wajah tambahan ke-%d untuk %s: %s", idx, person_id, err)
 
     face_info = records[0].get("Face", {})
     poliklinik = str(payload.get("poliklinik") or "Poli Umum").strip()
@@ -853,7 +856,11 @@ def _enroll_face(payload: dict[str, Any], collection_id: str) -> dict[str, Any]:
         "medicalHistory": initial_history,
         "faceId": face_info.get("FaceId"),
         "confidence": float(face_info.get("Confidence", 100.0)),
+        "birthDate": str(payload.get("birthDate") or "1995-01-01").strip(),
+        "medicalNotes": complaint,
         "enrolledPosesCount": poses_count,
+        "consentAccepted": bool(payload.get("consentAccepted", True)),
+        "consentTimestamp": str(payload.get("consentTimestamp") or datetime.now(timezone.utc).isoformat()),
     }
     queue_ticket = _generate_queue_ticket(
         patient_data, requested_poli=poliklinik, image_hash=image_hash

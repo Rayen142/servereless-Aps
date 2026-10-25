@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import AttendanceCamera from './components/AttendanceCamera';
 import EvaluationDashboardPage from './components/EvaluationDashboardPage';
 import FaceRegistrationPage from './components/FaceRegistrationPage';
-import { ChartBarIcon, ScanIcon, UserPlusIcon } from './components/icons';
+import { ChartBarIcon, ScanIcon, TvIcon, UserPlusIcon } from './components/icons';
 
-type ActivePage = 'attendance' | 'register' | 'analytics';
+type ActivePage = 'attendance' | 'tv-display' | 'register' | 'analytics';
 
 function App() {
   const [activePage, setActivePage] = useState<ActivePage>('attendance');
@@ -29,17 +29,22 @@ function App() {
     attendance: {
       title: 'Verifikasi Wajah & Antrean Poliklinik',
       subtitle:
-        'Pindai wajah pasien untuk membuka rekam medis, menerbitkan tiket antrean, atau memanggil antrean poli.',
+        'Pindai wajah pasien untuk membuka rekam medis, menerbitkan tiket antrean, atau menginput diagnosis ICD-10.',
+    },
+    'tv-display': {
+      title: 'Layar Display TV Antrean Ruang Tunggu',
+      subtitle:
+        'Tampilan monitor publik real-time untuk 10 poliklinik rawat jalan dengan panggilan suara otomatis (TTS Bahasa Indonesia).',
     },
     register: {
-      title: 'Pendaftaran Pasien Baru (Multi-Pose)',
+      title: 'Pendaftaran Pasien Baru (Multi-Pose & UU PDP Consent)',
       subtitle:
-        'Rekam biometrik wajah hingga 3 sudut pose beserta identitas medis awal pasien baru ke dalam sistem.',
+        'Rekam biometrik wajah hingga 3 sudut pose beserta persetujuan pemrosesan data pribadi spesifik (UU PDP No. 27/2022).',
     },
     analytics: {
-      title: 'Evaluasi Biometrik & Log Kunjungan Rumah Sakit',
+      title: 'Evaluasi Biometrik, Arsitektur SATUSEHAT FHIR & Log Kunjungan',
       subtitle:
-        'Metrik pengujian akurasi algoritma (Confusion Matrix, Precision, Recall, F1-Score, Latency) dan riwayat antrean.',
+        'Metrik pengujian akurasi algoritma, status database SQLite, interoperabilitas HL7 FHIR R4, dan riwayat antrean.',
     },
   }[activePage];
 
@@ -64,14 +69,14 @@ function App() {
                 )}
               </div>
               <p className="text-[11px] text-neutral-500">
-                Identifikasi Wajah, Antrean & Rekam Medis
+                Identifikasi Wajah, Antrean, ICD-10 & SATUSEHAT FHIR R4
               </p>
             </div>
           </div>
 
           <nav
             aria-label="Navigasi layanan"
-            className="flex items-center gap-1 rounded-full bg-neutral-100 p-1"
+            className="flex flex-wrap items-center gap-1 rounded-full bg-neutral-100 p-1"
           >
             <button
               type="button"
@@ -84,6 +89,18 @@ function App() {
             >
               <ScanIcon width={13} height={13} />
               Pasien Lama
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivePage('tv-display')}
+              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
+                activePage === 'tv-display'
+                  ? 'bg-white text-neutral-900 shadow-sm'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              <TvIcon width={13} height={13} />
+              Layar TV Ruang Tunggu
             </button>
             <button
               type="button"
@@ -107,7 +124,7 @@ function App() {
               }`}
             >
               <ChartBarIcon width={13} height={13} />
-              Evaluasi & Log
+              Evaluasi & SATUSEHAT
             </button>
           </nav>
         </div>
@@ -144,7 +161,12 @@ function App() {
           )}
         </div>
 
-        {activePage === 'attendance' && <AttendanceCamera />}
+        {activePage === 'attendance' && (
+          <AttendanceCamera initialRoleMode="doctor" />
+        )}
+        {activePage === 'tv-display' && (
+          <AttendanceCamera initialRoleMode="tv" />
+        )}
         {activePage === 'register' && (
           <FaceRegistrationPage
             onGoToAttendance={() => setActivePage('attendance')}

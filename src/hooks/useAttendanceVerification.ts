@@ -49,6 +49,8 @@ export interface RecognizedPerson {
   readonly medicalNotes?: string;
   readonly medicalHistory: readonly MedicalHistoryItem[];
   readonly similarity: number;
+  readonly consentAccepted?: boolean;
+  readonly consentTimestamp?: string;
   readonly alreadyQueued?: boolean;
   readonly queueTicket?: QueueTicket;
 }
@@ -74,6 +76,8 @@ export interface EnrollFaceInput {
   readonly medicalHistoryNotes?: string;
   readonly image: string;
   readonly extraImages?: readonly string[];
+  readonly consentAccepted?: boolean;
+  readonly consentTimestamp?: string;
 }
 
 export interface EnrollFaceResult {
@@ -252,6 +256,18 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
   const dokter = typeof record.dokter === 'string' ? record.dokter : '-';
   const medicalHistory = parseMedicalHistory(record.medicalHistory);
   const queueTicket = parseQueueTicket(record.queueTicket);
+  const consentAccepted =
+    record.consentAccepted !== undefined
+      ? Boolean(record.consentAccepted)
+      : record.consent_accepted !== undefined
+        ? Boolean(record.consent_accepted)
+        : true;
+  const consentTimestamp =
+    typeof record.consentTimestamp === 'string'
+      ? record.consentTimestamp
+      : typeof record.consent_timestamp === 'string'
+        ? record.consent_timestamp
+        : undefined;
   const alreadyQueued =
     record.alreadyQueued === true || queueTicket?.isExistingTicket === true;
   const similarity =
@@ -284,6 +300,8 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
             medicalNotes,
             medicalHistory,
             similarity,
+            consentAccepted,
+            consentTimestamp,
             alreadyQueued,
             queueTicket,
           }
@@ -482,6 +500,8 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
             medicalHistoryNotes: input.medicalHistoryNotes,
             image: input.image,
             extraImages: input.extraImages,
+            consentAccepted: input.consentAccepted ?? true,
+            consentTimestamp: input.consentTimestamp ?? new Date().toISOString(),
           }),
         });
         const body: unknown = await response.json().catch(() => null);

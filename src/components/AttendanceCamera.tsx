@@ -21,9 +21,23 @@ import {
 } from '../lib/hospital';
 import CameraView from './CameraView';
 import {
+  formatIcd10Diagnosis,
+  parseIcd10FromText,
+  searchIcd10Catalog,
+  type Icd10Entry,
+} from '../lib/icd10';
+import {
+  buildSatusehatFhirBundle,
+  downloadSatusehatFhirJson,
+} from '../lib/satusehat';
+import {
   AlertIcon,
   CheckIcon,
   ChevronRightIcon,
+  ClockIcon,
+  DownloadIcon,
+  FileTextIcon,
+  HospitalIcon,
   PlusIcon,
   PrinterIcon,
   RefreshIcon,
@@ -426,6 +440,53 @@ function WaitingRoomTvDisplay({
   readonly isAdvancing: boolean;
   readonly lastSpokenText: string | null;
 }) {
+  const [clockText, setClockText] = useState<string>('');
+  const [dateText, setDateText] = useState<string>('');
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const updateClock = () => {
+      const now = new Date();
+      setClockText(
+        now.toLocaleTimeString('id-ID', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }) + ' WIB',
+      );
+      setDateText(
+        now.toLocaleDateString('id-ID', {
+          weekday: 'long',
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
+      );
+    };
+    updateClock();
+    const timer = window.setInterval(updateClock, 10000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch {
+      /* abaikan jika browser membatasi fullscreen */
+    }
+  };
+
   const currentPoli =
     queues.find((q) => q.poliklinik === activePoliName) ??
     queues[0] ??
@@ -433,159 +494,201 @@ function WaitingRoomTvDisplay({
 
   const canAdvance =
     currentPoli.currentServingSequence < currentPoli.latestQueueSequence;
+  const servingStatus = currentPoli.servingStatus ?? 'DIPANGGIL';
 
   return (
-    <div className="space-y-6">
-      {/* Main Spotlight Card */}
-      <div className="rounded-3xl bg-neutral-900 p-6 sm:p-8 text-white">
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5">
-          <div>
-            <span className="inline-flex items-center gap-2 text-xs font-medium text-emerald-400">
-              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              MONITOR PANGGILAN POLIKLINIK · LIVE AUDIO TTS
+    <div className="overflow-hidden rounded-2xl border border-neutral-200/90 bg-white">
+      {/* Top Bar Minimalis */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200/80 px-6 py-4">
+        <div className="flex items-baseline gap-3">
+          <span className="text-sm font-semibold tracking-tight text-neutral-900">
+            Instalasi Rawat Jalan
+          </span>
+          <span className="text-xs text-neutral-400">
+            Papan Informasi Antrean Poliklinik
+          </span>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 text-xs text-neutral-500">
+            <span>{dateText}</span>
+            <span className="text-neutral-300">·</span>
+            <span className="font-mono font-semibold text-neutral-900">
+              {clockText}
             </span>
-            <h2 className="mt-1 text-xl font-semibold sm:text-2xl">
-              {currentPoli.poliklinik}
-            </h2>
-            <p className="text-xs text-neutral-400">
-              {currentPoli.room} · {currentPoli.dokter}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void toggleFullscreen()}
+            className="h-8 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
+          >
+            {isFullscreen ? 'Keluar layar penuh' : 'Layar penuh'}
+          </button>
+        </div>
+      </div>
+
+      {/* Main Split Grid: Kiri (Fokus Panggilan), Kanan (Tabel Direktori 10 Poli) */}
+      <div className="grid divide-y divide-neutral-200/80 lg:grid-cols-[1.15fr_1fr] lg:divide-x lg:divide-y-0">
+        {/* Panel Kiri: Nomor Sedang Dilayani */}
+        <div className="flex flex-col justify-between p-7 sm:p-10">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  servingStatus === 'SELESAI'
+                    ? 'bg-neutral-300'
+                    : 'bg-emerald-600'
+                }`}
+              />
+              <span className="text-xs font-medium text-neutral-500">
+                {servingStatus === 'SELESAI'
+                  ? 'Pelayanan selesai'
+                  : 'Sedang dipanggil'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
+                disabled={isAdvancing}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
+              >
+                <VolumeIcon width={13} height={13} className="text-neutral-500" />
+                Panggil ulang
+              </button>
+              <button
+                type="button"
+                onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
+                disabled={!canAdvance || isAdvancing}
+                className="inline-flex h-8 items-center gap-1 rounded-lg bg-neutral-900 px-3.5 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-35"
+              >
+                Berikutnya
+                <ChevronRightIcon width={13} height={13} />
+              </button>
+            </div>
+          </div>
+
+          {/* Nomor Antrean Utama */}
+          <div className="my-10 sm:my-14">
+            <p className="font-mono text-7xl font-semibold leading-none tracking-tighter text-neutral-950 sm:text-8xl">
+              {currentPoli.currentServingNumber}
+            </p>
+            <p className="mt-5 text-xl font-medium tracking-tight text-neutral-900 sm:text-2xl">
+              {currentPoli.currentPatientName ?? 'Pasien Poliklinik'}
+            </p>
+            <p className="mt-1.5 text-xs text-neutral-500">
+              No. RM{' '}
+              <span className="font-mono text-neutral-700">
+                {currentPoli.currentPatientNoRm ?? '—'}
+              </span>{' '}
+              · Silakan menuju{' '}
+              <span className="font-medium text-neutral-800">
+                {currentPoli.room.replace('•', '·')}
+              </span>
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
-              disabled={isAdvancing}
-              className="inline-flex h-9 items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-4 text-xs font-medium text-white transition hover:bg-white/15 disabled:opacity-40"
-            >
-              <VolumeIcon width={14} height={14} />
-              Panggil Ulang Suara
-            </button>
-            <button
-              type="button"
-              onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
-              disabled={!canAdvance || isAdvancing}
-              className="inline-flex h-9 items-center gap-1.5 rounded-full bg-emerald-500 px-4 text-xs font-semibold text-neutral-950 transition hover:bg-emerald-400 disabled:opacity-40"
-            >
-              <VolumeIcon width={14} height={14} />
-              Panggil Antrean Berikutnya
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-6 grid gap-6 md:grid-cols-3 items-center">
-          <div className="md:col-span-2 rounded-2xl bg-white/5 p-6 border border-white/10">
-            <span className="text-xs uppercase tracking-wider text-neutral-400">
-              Nomor Antrean Sedang Dipanggil
-            </span>
-            <div className="mt-2 flex flex-wrap items-baseline gap-4">
-              <span className="font-mono text-6xl sm:text-7xl font-bold tracking-tight text-emerald-400">
-                {currentPoli.currentServingNumber}
-              </span>
+          {/* Ringkasan Bawah */}
+          <div>
+            <div className="grid grid-cols-3 gap-6 border-t border-neutral-150 pt-6 text-xs">
               <div>
-                <p className="text-lg font-semibold text-white">
-                  {currentPoli.currentPatientName ?? 'Pasien Poliklinik'}
+                <p className="text-neutral-400">Poliklinik</p>
+                <p className="mt-1 font-medium text-neutral-900">
+                  {currentPoli.poliklinik}
                 </p>
-                <p className="font-mono text-xs text-neutral-400">
-                  No. RM: {currentPoli.currentPatientNoRm ?? '-'} · Silakan Masuk ke{' '}
-                  {currentPoli.room}
+                <p className="mt-0.5 truncate text-neutral-500">
+                  {currentPoli.dokter}
                 </p>
               </div>
-            </div>
-          </div>
 
-          <div className="space-y-3">
-            <div className="rounded-2xl bg-white/5 p-4 border border-white/10">
-              <span className="text-xs text-neutral-400">Persiapan Berikutnya</span>
-              <p className="mt-1 font-mono text-3xl font-semibold text-white">
-                {currentPoli.nextQueueNumber ?? '—'}
-              </p>
-              <p className="mt-0.5 text-xs text-neutral-400 truncate">
-                {currentPoli.nextPatientName ?? 'Belum ada antrean'}
-              </p>
+              <div>
+                <p className="text-neutral-400">Berikutnya</p>
+                <p className="mt-1 font-mono text-base font-semibold text-neutral-900">
+                  {currentPoli.nextQueueNumber ?? '—'}
+                </p>
+                <p className="mt-0.5 truncate text-neutral-500">
+                  {currentPoli.nextPatientName ?? 'Tidak ada antrean'}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-neutral-400">Sisa antrean</p>
+                <p className="mt-1 font-medium text-neutral-900">
+                  {currentPoli.totalWaiting} pasien
+                </p>
+                <p className="mt-0.5 font-mono text-neutral-500">
+                  Terakhir {currentPoli.latestQueueNumber}
+                </p>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-2xl bg-white/5 p-3.5 border border-white/10">
-                <span className="text-[11px] text-neutral-400">Sisa Antrean</span>
-                <p className="mt-0.5 font-mono text-xl font-semibold text-white">
-                  {currentPoli.totalWaiting} Pasien
-                </p>
+            {lastSpokenText && (
+              <div className="mt-5 flex items-center gap-2 border-t border-neutral-100 pt-3.5 text-xs text-neutral-500">
+                <VolumeIcon width={13} height={13} className="shrink-0 text-neutral-400" />
+                <span className="truncate">{lastSpokenText}</span>
               </div>
-              <div className="rounded-2xl bg-white/5 p-3.5 border border-white/10">
-                <span className="text-[11px] text-neutral-400">Nomor Terakhir</span>
-                <p className="mt-0.5 font-mono text-xl font-semibold text-white">
-                  {currentPoli.latestQueueNumber}
-                </p>
-              </div>
-            </div>
+            )}
           </div>
         </div>
 
-        {lastSpokenText && (
-          <div className="mt-5 flex items-center gap-2.5 rounded-xl bg-white/10 px-4 py-2.5 text-xs text-emerald-300">
-            <VolumeIcon width={15} height={15} className="shrink-0" />
-            <span>Panggilan Suara Aktif: &ldquo;{lastSpokenText}&rdquo;</span>
+        {/* Panel Kanan: Tabel Direktori 10 Poliklinik */}
+        <div className="flex flex-col">
+          <div className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-neutral-100 bg-neutral-50/60 px-6 py-3 text-[11px] font-medium text-neutral-400">
+            <span>Poliklinik</span>
+            <span className="text-right">Menunggu</span>
+            <span className="w-20 text-right">Dilayani</span>
           </div>
-        )}
-      </div>
 
-      {/* Grid Seluruh 10 Poliklinik */}
-      <div>
-        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-neutral-500">
-          Status Antrean Seluruh Poliklinik (Klik untuk Memilih)
-        </h3>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          {queues.map((q) => {
-            const isSelected = q.poliklinik === currentPoli.poliklinik;
-            return (
-              <button
-                key={q.poliklinik}
-                type="button"
-                onClick={() => onSelectPoli(q.poliklinik)}
-                className={`rounded-2xl border p-4 text-left transition ${
-                  isSelected
-                    ? 'border-neutral-900 bg-neutral-900 text-white shadow-sm'
-                    : 'border-neutral-200/80 bg-white text-neutral-900 hover:border-neutral-400'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span
-                    className={`font-mono text-xs font-semibold ${
-                      isSelected ? 'text-emerald-400' : 'text-emerald-700'
-                    }`}
-                  >
-                    {q.prefix}
-                  </span>
-                  <span
-                    className={`text-[10px] ${
-                      isSelected ? 'text-neutral-400' : 'text-neutral-400'
-                    }`}
-                  >
-                    Menunggu: {q.totalWaiting}
-                  </span>
-                </div>
-                <p className="mt-1 font-mono text-2xl font-bold">
-                  {q.currentServingNumber}
-                </p>
-                <p
-                  className={`mt-1 truncate text-xs font-medium ${
-                    isSelected ? 'text-neutral-200' : 'text-neutral-800'
+          <div className="divide-y divide-neutral-100">
+            {queues.map((q) => {
+              const isSelected = q.poliklinik === currentPoli.poliklinik;
+              return (
+                <button
+                  key={q.poliklinik}
+                  type="button"
+                  onClick={() => onSelectPoli(q.poliklinik)}
+                  className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-4 px-6 py-3.5 text-left transition ${
+                    isSelected
+                      ? 'bg-neutral-100/80'
+                      : 'bg-white hover:bg-neutral-50/70'
                   }`}
                 >
-                  {q.poliklinik}
-                </p>
-                <p
-                  className={`mt-0.5 truncate text-[11px] ${
-                    isSelected ? 'text-neutral-400' : 'text-neutral-500'
-                  }`}
-                >
-                  Terakhir: {q.latestQueueNumber}
-                </p>
-              </button>
-            );
-          })}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`truncate text-xs ${
+                          isSelected
+                            ? 'font-semibold text-neutral-950'
+                            : 'font-medium text-neutral-800'
+                        }`}
+                      >
+                        {q.poliklinik}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate text-[11px] text-neutral-400">
+                      {q.room.replace('•', '·')} · {q.dokter}
+                    </p>
+                  </div>
+
+                  <span className="text-right text-xs text-neutral-500">
+                    {q.totalWaiting > 0 ? `${q.totalWaiting} pasien` : '—'}
+                  </span>
+
+                  <span
+                    className={`w-20 text-right font-mono text-sm ${
+                      isSelected
+                        ? 'font-semibold text-neutral-950'
+                        : 'font-medium text-neutral-800'
+                    }`}
+                  >
+                    {q.currentServingNumber}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
@@ -810,7 +913,10 @@ function PatientDetails({
 }) {
   const allergy = hasRealAllergy(patient.allergies);
   const [isAddingNote, setIsAddingNote] = useState(false);
-  const [diagnosis, setDiagnosis] = useState('');
+  const [icdSearchQuery, setIcdSearchQuery] = useState('');
+  const [selectedIcd, setSelectedIcd] = useState<Icd10Entry | null>(null);
+  const [showIcdDropdown, setShowIcdDropdown] = useState(false);
+  const [diagnosisCustomSuffix, setDiagnosisCustomSuffix] = useState('');
   const [treatment, setTreatment] = useState('');
   const [notePoli, setNotePoli] = useState(
     patient.queueTicket?.poliklinik ?? patient.poliklinik,
@@ -820,17 +926,44 @@ function PatientDetails({
   );
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
+  const [showFhirPreview, setShowFhirPreview] = useState(false);
 
   useEffect(() => {
     setNotePoli(patient.queueTicket?.poliklinik ?? patient.poliklinik);
     setNoteDoctor(patient.queueTicket?.dokter ?? patient.dokter);
+    setSelectedIcd(null);
+    setIcdSearchQuery('');
+    setDiagnosisCustomSuffix('');
   }, [patient.personId, patient.poliklinik, patient.dokter, patient.queueTicket]);
+
+  const icdSuggestions = searchIcd10Catalog(icdSearchQuery, notePoli, 8);
+
+  const handleSelectIcdEntry = (entry: Icd10Entry) => {
+    setSelectedIcd(entry);
+    setIcdSearchQuery(`${entry.code} — ${entry.nameId}`);
+    setShowIcdDropdown(false);
+    if (!treatment.trim()) {
+      setTreatment(entry.defaultTreatment);
+    }
+  };
+
+  const composedDiagnosis = selectedIcd
+    ? diagnosisCustomSuffix.trim()
+      ? `${formatIcd10Diagnosis(selectedIcd)} — ${diagnosisCustomSuffix.trim()}`
+      : formatIcd10Diagnosis(selectedIcd)
+    : '';
 
   const handleSaveDoctorNote = async (e: FormEvent) => {
     e.preventDefault();
     setNoteError(null);
-    if (!diagnosis.trim() || !treatment.trim()) {
-      setNoteError('Diagnosis dan tindakan/resep wajib diisi.');
+    if (!selectedIcd) {
+      setNoteError(
+        'Pilih kode diagnosis standar WHO ICD-10 dari daftar pencarian terlebih dahulu.',
+      );
+      return;
+    }
+    if (!treatment.trim()) {
+      setNoteError('Tindakan klinis dan resep obat wajib diisi.');
       return;
     }
 
@@ -840,7 +973,7 @@ function PatientDetails({
       noRm: patient.noRm,
       poliklinik: notePoli,
       doctor: noteDoctor,
-      diagnosis: diagnosis.trim(),
+      diagnosis: composedDiagnosis,
       treatment: treatment.trim(),
     });
     setIsSavingNote(false);
@@ -854,20 +987,24 @@ function PatientDetails({
       date: new Date().toISOString().slice(0, 10),
       poliklinik: notePoli,
       doctor: noteDoctor,
-      diagnosis: diagnosis.trim(),
+      diagnosis: composedDiagnosis,
       treatment: treatment.trim(),
     };
 
     onAddHistory(newEntry, result.medicalHistory);
-    setDiagnosis('');
+    setSelectedIcd(null);
+    setIcdSearchQuery('');
+    setDiagnosisCustomSuffix('');
     setTreatment('');
     setIsAddingNote(false);
   };
 
+  const fhirBundle = showFhirPreview ? buildSatusehatFhirBundle(patient) : null;
+
   return (
     <div className="no-print rounded-2xl border border-neutral-200/80 bg-white p-5">
-      {/* Identitas Pasien */}
-      <div className="flex items-center justify-between gap-3">
+      {/* Identitas Pasien & Status Kepatuhan UU PDP */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-xs font-semibold text-neutral-700">
             {patient.fullName
@@ -888,10 +1025,19 @@ function PatientDetails({
           </div>
         </div>
 
-        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
-          <ShieldCheckIcon width={13} height={13} />
-          {patient.similarity.toFixed(1)}%
-        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span
+            title="Persetujuan pemrosesan data biometrik & RME sesuai UU PDP No. 27/2022 tercatat"
+            className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2.5 py-1 text-[10px] font-semibold text-sky-700"
+          >
+            <CheckIcon width={11} height={11} />
+            UU PDP Consent
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+            <ShieldCheckIcon width={13} height={13} />
+            {patient.similarity.toFixed(1)}%
+          </span>
+        </div>
       </div>
 
       {/* Ringkasan Medis */}
@@ -909,7 +1055,7 @@ function PatientDetails({
           <dd className="mt-0.5 font-medium text-neutral-900">{patient.insurance}</dd>
         </div>
         <div>
-          <dt className="text-neutral-400">NIK</dt>
+          <dt className="text-neutral-400">NIK (IHS)</dt>
           <dd className="mt-0.5 font-mono font-medium text-neutral-900 truncate">
             {patient.nik || '-'}
           </dd>
@@ -918,7 +1064,9 @@ function PatientDetails({
 
       {patient.medicalNotes && (
         <div className="mt-3 rounded-xl bg-sky-50/70 border border-sky-100 p-2.5 text-xs text-sky-950">
-          <p className="text-[10px] font-semibold text-sky-700 uppercase tracking-wider">Catatan Klinis</p>
+          <p className="text-[10px] font-semibold text-sky-700 uppercase tracking-wider">
+            Catatan Klinis
+          </p>
           <p className="mt-0.5 text-neutral-800">{patient.medicalNotes}</p>
         </div>
       )}
@@ -949,33 +1097,77 @@ function PatientDetails({
         </div>
       </div>
 
-      {/* Riwayat Pemeriksaan + Tombol Tambah Catatan Dokter */}
+      {/* Riwayat Pemeriksaan + Tombol Tambah Catatan Dokter (ICD-10) & SATUSEHAT FHIR */}
       <div className="mt-4 border-t border-neutral-100 pt-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs font-semibold text-neutral-900">
             Riwayat Pemeriksaan ({patient.medicalHistory.length})
           </p>
-          {allowDoctorForm && (
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setIsAddingNote((v) => !v)}
-              className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 transition hover:bg-neutral-50"
+              onClick={() => setShowFhirPreview((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50/70 px-2.5 py-1 text-[11px] font-medium text-emerald-800 transition hover:bg-emerald-100"
             >
-              <PlusIcon width={12} height={12} />
-              {isAddingNote ? 'Tutup Form' : 'Catat Pemeriksaan Dokter'}
+              <FileTextIcon width={12} height={12} />
+              {showFhirPreview ? 'Tutup FHIR R4' : 'SATUSEHAT FHIR'}
             </button>
-          )}
+
+            {allowDoctorForm && (
+              <button
+                type="button"
+                onClick={() => setIsAddingNote((v) => !v)}
+                className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 transition hover:bg-neutral-50"
+              >
+                <PlusIcon width={12} height={12} />
+                {isAddingNote ? 'Tutup Form' : 'Catat Diagnosis ICD-10'}
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Form Tambah Riwayat Pemeriksaan Dokter */}
+        {/* Panel Preview & Ekspor HL7 FHIR R4 Bundle SATUSEHAT Kemenkes */}
+        {showFhirPreview && fhirBundle && (
+          <div className="mt-3 rounded-xl border border-emerald-200 bg-neutral-950 p-3.5 text-xs text-neutral-100">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2.5">
+              <div>
+                <span className="inline-flex items-center gap-1.5 font-mono text-[11px] font-bold text-emerald-400">
+                  HL7 FHIR R4 Transaction Bundle · SATUSEHAT Kemenkes RI
+                </span>
+                <p className="text-[11px] text-neutral-400">
+                  Terdiri dari Resource Patient (IHS/NIK), Consent (UU PDP), Encounter (AMB), & Condition (ICD-10)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => downloadSatusehatFhirJson(patient)}
+                className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1 text-[11px] font-semibold text-neutral-950 transition hover:bg-emerald-400"
+              >
+                <DownloadIcon width={12} height={12} />
+                Unduh JSON FHIR
+              </button>
+            </div>
+            <pre className="mt-2.5 max-h-56 overflow-auto rounded-lg bg-black/50 p-2.5 font-mono text-[10px] leading-relaxed text-emerald-300">
+              {JSON.stringify(fhirBundle, null, 2)}
+            </pre>
+          </div>
+        )}
+
+        {/* Form Tambah Riwayat Pemeriksaan Dokter Berbasis Pencarian Kode ICD-10 */}
         {allowDoctorForm && isAddingNote && (
           <form
             onSubmit={(e) => void handleSaveDoctorNote(e)}
-            className="mt-3 space-y-2.5 rounded-xl border border-neutral-200 bg-neutral-50/80 p-3.5 text-xs"
+            className="mt-3 space-y-3 rounded-xl border border-neutral-200 bg-neutral-50/90 p-3.5 text-xs"
           >
-            <p className="font-semibold text-neutral-800">
-              Input Pemeriksaan Baru (SOAP / Rekam Medis)
-            </p>
+            <div className="flex items-center justify-between">
+              <p className="font-semibold text-neutral-900">
+                Input Pemeriksaan Dokter (Standar Pengkodean WHO ICD-10)
+              </p>
+              <span className="rounded bg-neutral-200/80 px-2 py-0.5 font-mono text-[10px] font-semibold text-neutral-700">
+                ICD-10 · INA-CBGs
+              </span>
+            </div>
+
             <div className="grid grid-cols-2 gap-2">
               <input
                 value={notePoli}
@@ -990,27 +1182,123 @@ function PatientDetails({
                 className="h-8 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs outline-none focus:border-neutral-900"
               />
             </div>
+
+            {/* Pencarian & Pemilih Kode Diagnosis ICD-10 */}
+            <div className="relative space-y-1.5">
+              <label className="block text-[11px] font-medium text-neutral-600">
+                Cari & Pilih Kode Diagnosis ICD-10 *
+              </label>
+              <div className="relative flex items-center">
+                <SearchIcon
+                  width={13}
+                  height={13}
+                  className="pointer-events-none absolute left-2.5 text-neutral-400"
+                />
+                <input
+                  value={icdSearchQuery}
+                  onFocus={() => setShowIcdDropdown(true)}
+                  onChange={(e) => {
+                    setIcdSearchQuery(e.target.value);
+                    setSelectedIcd(null);
+                    setShowIcdDropdown(true);
+                  }}
+                  placeholder="Ketik kode (mis: I10, E11.9, J45.9, K29.7) atau nama diagnosis…"
+                  className="h-8 w-full rounded-lg border border-neutral-200 bg-white pl-8 pr-20 text-xs outline-none focus:border-neutral-900"
+                />
+                {selectedIcd && (
+                  <span className="absolute right-2 rounded bg-emerald-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-800">
+                    {selectedIcd.code} ✓
+                  </span>
+                )}
+              </div>
+
+              {showIcdDropdown && (
+                <div className="max-h-48 overflow-y-auto rounded-xl border border-neutral-200 bg-white p-1 shadow-md">
+                  {icdSuggestions.length === 0 ? (
+                    <p className="px-3 py-2 text-[11px] text-neutral-400">
+                      Tidak ditemukan kode ICD-10 yang cocok. Coba kata kunci lain.
+                    </p>
+                  ) : (
+                    icdSuggestions.map((entry) => {
+                      const isPoliRecommended = entry.poliklinik === notePoli;
+                      return (
+                        <button
+                          key={entry.code}
+                          type="button"
+                          onClick={() => handleSelectIcdEntry(entry)}
+                          className="flex w-full items-start justify-between gap-2 rounded-lg px-2.5 py-2 text-left transition hover:bg-neutral-100"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="rounded bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white">
+                                {entry.code}
+                              </span>
+                              <span className="truncate font-semibold text-neutral-900">
+                                {entry.nameId}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 truncate text-[10px] italic text-neutral-500">
+                              WHO: {entry.nameEn}
+                            </p>
+                          </div>
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                              isPoliRecommended
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-neutral-100 text-neutral-500'
+                            }`}
+                          >
+                            {entry.poliklinik}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              {selectedIcd && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 text-[11px] text-emerald-950">
+                  <span>
+                    Terpilih: <strong>{formatIcd10Diagnosis(selectedIcd)}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setTreatment(selectedIcd.defaultTreatment)}
+                    className="font-semibold text-emerald-700 underline hover:text-emerald-950"
+                  >
+                    Isi Resep Standar
+                  </button>
+                </div>
+              )}
+            </div>
+
             <input
-              value={diagnosis}
-              onChange={(e) => setDiagnosis(e.target.value)}
-              placeholder="Diagnosis Klinis / ICD-10 (contoh: Observasi Febris / ISPA J06.9) *"
+              value={diagnosisCustomSuffix}
+              onChange={(e) => setDiagnosisCustomSuffix(e.target.value)}
+              placeholder="Keterangan klinis tambahan opsional (mis: Tekanan Darah 150/95 mmHg)"
               className="h-8 w-full rounded-lg border border-neutral-200 bg-white px-2.5 text-xs outline-none focus:border-neutral-900"
-              required
             />
+
             <input
               value={treatment}
               onChange={(e) => setTreatment(e.target.value)}
-              placeholder="Tindakan & Resep Obat (contoh: Paracetamol 500mg 3x1, Vitamin C) *"
+              placeholder="Tindakan & Resep Obat (contoh: Amlodipine 5mg 1x1, Diet rendah garam) *"
               className="h-8 w-full rounded-lg border border-neutral-200 bg-white px-2.5 text-xs outline-none focus:border-neutral-900"
               required
             />
+
             {noteError && (
               <p className="text-[11px] font-medium text-rose-600">{noteError}</p>
             )}
+
             <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setIsAddingNote(false)}
+                onClick={() => {
+                  setIsAddingNote(false);
+                  setShowIcdDropdown(false);
+                }}
                 className="rounded-full px-3 py-1 text-xs text-neutral-500 hover:text-neutral-800"
               >
                 Batal
@@ -1020,7 +1308,7 @@ function PatientDetails({
                 disabled={isSavingNote}
                 className="rounded-full bg-neutral-900 px-3.5 py-1 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-50"
               >
-                {isSavingNote ? 'Menyimpan…' : 'Simpan Riwayat'}
+                {isSavingNote ? 'Menyimpan…' : 'Simpan Diagnosis ICD-10'}
               </button>
             </div>
           </form>
@@ -1032,19 +1320,27 @@ function PatientDetails({
           </p>
         ) : (
           <ol className="mt-3 max-h-48 space-y-3 overflow-y-auto border-l border-neutral-200 pl-3.5 pr-1">
-            {patient.medicalHistory.map((item, idx) => (
-              <li key={`${item.date}-${idx}`} className="relative text-xs">
-                <span className="absolute -left-[18px] top-1.5 h-1.5 w-1.5 rounded-full bg-neutral-400" />
-                <p className="text-[11px] text-neutral-400">
-                  {item.date} · {item.poliklinik}
-                </p>
-                <p className="mt-0.5 font-medium text-neutral-900">
-                  {item.diagnosis}
-                </p>
-                <p className="text-neutral-600">{item.treatment}</p>
-                <p className="text-[11px] text-neutral-400">{item.doctor}</p>
-              </li>
-            ))}
+            {patient.medicalHistory.map((item, idx) => {
+              const parsedIcd = parseIcd10FromText(item.diagnosis);
+              return (
+                <li key={`${item.date}-${idx}`} className="relative text-xs">
+                  <span className="absolute -left-[18px] top-1.5 h-1.5 w-1.5 rounded-full bg-neutral-400" />
+                  <div className="flex items-center gap-2">
+                    <p className="text-[11px] text-neutral-400">
+                      {item.date} · {item.poliklinik}
+                    </p>
+                    <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-neutral-700">
+                      ICD-10: {parsedIcd.code}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 font-medium text-neutral-900">
+                    {item.diagnosis}
+                  </p>
+                  <p className="text-neutral-600">{item.treatment}</p>
+                  <p className="text-[11px] text-neutral-400">{item.doctor}</p>
+                </li>
+              );
+            })}
           </ol>
         )}
       </div>
@@ -1056,10 +1352,18 @@ function PatientDetails({
 /*  Komponen Utama Pemindai & Antrean                                         */
 /* -------------------------------------------------------------------------- */
 
-function AttendanceCamera() {
+function AttendanceCamera({
+  initialRoleMode = 'doctor',
+}: {
+  readonly initialRoleMode?: ViewRoleMode;
+} = {}) {
   const frame = useFrameCapture();
   const verification = useAttendanceVerification();
-  const [roleMode, setRoleMode] = useState<ViewRoleMode>('doctor');
+  const [roleMode, setRoleMode] = useState<ViewRoleMode>(initialRoleMode);
+
+  useEffect(() => {
+    setRoleMode(initialRoleMode);
+  }, [initialRoleMode]);
   const [poli, setPoli] = useState<string>(AUTO_POLI);
   const [queues, setQueues] = useState<readonly PoliQueueSnapshot[]>(
     DEFAULT_POLI_QUEUES,
@@ -1234,7 +1538,8 @@ function AttendanceCamera() {
       )}
 
       {/* Selector Mode Tampilan Peran (Role-Based View Switcher) */}
-      <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-neutral-200/80 bg-white px-4 py-2.5">
+      {initialRoleMode !== 'tv' && (
+<div className="no-print mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-neutral-200/80 bg-white px-4 py-2.5">
         <div className="flex items-center gap-2 text-xs text-neutral-500">
           <span className="font-semibold text-neutral-800">Mode Terminal:</span>
           <span>
@@ -1287,6 +1592,7 @@ function AttendanceCamera() {
           </button>
         </div>
       </div>
+      )}
 
       {roleMode === 'tv' ? (
         <WaitingRoomTvDisplay

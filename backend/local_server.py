@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -24,13 +25,20 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("simrs.local_server")
 
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BACKEND_DIR.parent
@@ -84,11 +92,13 @@ def _load_face_cascade() -> Any:
     if not os.path.exists(xml_path):
         try:
             urllib.request.urlretrieve(xml_url, xml_path)
-        except Exception:
+        except Exception as err:
+            logger.warning("Gagal mengunduh Haar Cascade XML dari CDN: %s", err)
             return None
     try:
         return cv2.CascadeClassifier(xml_path)
-    except Exception:
+    except Exception as err:
+        logger.warning("Gagal memuat cv2.CascadeClassifier: %s", err)
         return None
 
 
@@ -108,15 +118,16 @@ def _load_subjects_map() -> dict[str, dict[str, Any]]:
         db_map = database.get_all_patients_map()
         if db_map:
             return db_map
-    except Exception:
-        pass
+    except Exception as err:
+        logger.error("Gagal memuat peta pasien dari SQLite: %s", err)
     if not METADATA_JSON_PATH.exists():
         return {}
     try:
         data = json.loads(METADATA_JSON_PATH.read_text(encoding="utf-8"))
         subjects = data.get("subjects", [])
         return {s["person_id"]: s for s in subjects if "person_id" in s}
-    except Exception:
+    except Exception as err:
+        logger.error("Gagal membaca fallback metadata.json: %s", err)
         return {}
 
 
@@ -134,8 +145,8 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
         saved = database.upsert_patient(resp_payload)
         if saved:
             return saved
-    except Exception:
-        pass
+    except Exception as err:
+        logger.error("Gagal menyimpan pasien baru ke SQLite: %s", err)
     person_id = resp_payload["personId"]
     gender_label = resp_payload.get("gender", "Laki-laki")
     gender_code = "L" if gender_label in ("L", "Laki-laki") else "P"
@@ -149,8 +160,8 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
     if METADATA_JSON_PATH.exists():
         try:
             data = json.loads(METADATA_JSON_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as err:
+            logger.warning("Gagal membaca metadata.json saat simpan pasien: %s", err)
 
     subjects: list[dict[str, Any]] = data.get("subjects", [])
     existing_idx = next(
@@ -224,8 +235,8 @@ def _append_medical_history_to_metadata(
     try:
         from app import database
         return database.insert_medical_record(person_id, no_rm, new_entry)
-    except Exception:
-        pass
+    except Exception as err:
+        logger.error("Gagal menyimpan rekam medis baru ke SQLite: %s", err)
     if not METADATA_JSON_PATH.exists():
         return [new_entry]
     try:
@@ -244,7 +255,8 @@ def _append_medical_history_to_metadata(
             json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         return updated_history
-    except Exception:
+    except Exception as err:
+        logger.error("Gagal memperbarui riwayat medis di metadata.json: %s", err)
         return [new_entry]
 
 
@@ -257,8 +269,8 @@ def _extract_face_roi(gray_img: np.ndarray) -> np.ndarray:
                 roi = gray_img[y : y + h, x : x + w]
                 resized = cv2.resize(roi, (128, 128))
                 return CLAHE.apply(resized)
-        except Exception:
-            pass
+        except Exception as err:
+            logger.debug("Deteksi Haar Cascade gagal pada frame, menggunakan center crop: %s", err)
     h, w = gray_img.shape[:2]
     cy, cx = h // 2, w // 2
     r = min(h, w) // 4
@@ -816,8 +828,8 @@ def _configure_local_handler() -> None:
             from app import database
             if serializable_item.get("Status") != "QUEUE_STATE":
                 database.insert_attendance_log(serializable_item)
-        except Exception:
-            pass
+        except Exception as err:
+            logger.error("Gagal menyimpan log kehadiran ke SQLite: %s", err)
         records.insert(0, serializable_item)
         ATTENDANCE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         ATTENDANCE_LOG_PATH.write_text(
@@ -844,8 +856,8 @@ def _configure_local_handler() -> None:
                     poli_data = q_data.get(prefix)
                     if poli_data:
                         return {"Item": {"PK": pk, "SK": "METADATA", **poli_data}}
-                except Exception:
-                    pass
+                except Exception as err:
+                    logger.warning("Gagal membaca state antrean poli %s: %s", prefix, err)
         return {}
 
     mock_table = MagicMock()
@@ -868,15 +880,21 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
         pass
 
     def _send_lambda_response(self, result: dict[str, Any]) -> None:
-        status_code = int(result.get("statusCode", 200))
-        headers = result.get("headers", {})
-        body = result.get("body", "{}")
+        try:
+            status_code = int(result.get("statusCode", 200))
+            headers = result.get("headers", {})
+            body = result.get("body", "{}")
 
-        self.send_response(status_code)
-        for key, value in headers.items():
-            self.send_header(key, str(value))
-        self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
+            self.send_response(status_code)
+            for key, value in headers.items():
+                self.send_header(key, str(value))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With,*")
+            self.send_header("Access-Control-Allow-Methods", "OPTIONS,GET,POST,PUT,DELETE")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            pass
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         event = {"httpMethod": "OPTIONS"}
@@ -942,19 +960,21 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
             try:
                 from app import database
                 logs = database.get_attendance_logs(limit=100)
-            except Exception:
+            except Exception as err:
+                logger.warning("Gagal memuat log dari SQLite di analytics: %s", err)
                 if ATTENDANCE_LOG_PATH.exists():
                     try:
                         logs = json.loads(ATTENDANCE_LOG_PATH.read_text(encoding="utf-8"))
-                    except Exception:
+                    except Exception as json_err:
+                        logger.warning("Gagal membaca fallback log JSON: %s", json_err)
                         logs = []
             subjects_map = _load_subjects_map()
             db_diag = None
             try:
                 from app import database
                 db_diag = database.get_database_diagnostics()
-            except Exception:
-                pass
+            except Exception as err:
+                logger.error("Gagal mengambil diagnostik SQLite: %s", err)
             self._send_lambda_response(
                 {
                     "statusCode": 200,
@@ -978,11 +998,13 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
             try:
                 from app import database
                 logs = database.get_attendance_logs(limit=150)
-            except Exception:
+            except Exception as err:
+                logger.warning("Gagal memuat log dari SQLite: %s", err)
                 if ATTENDANCE_LOG_PATH.exists():
                     try:
                         logs = json.loads(ATTENDANCE_LOG_PATH.read_text(encoding="utf-8"))
-                    except Exception:
+                    except Exception as json_err:
+                        logger.warning("Gagal membaca fallback log JSON: %s", json_err)
                         logs = []
             self._send_lambda_response(
                 {
@@ -1151,8 +1173,8 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     _configure_local_handler()
-    server = HTTPServer(("127.0.0.1", port), LocalLambdaRequestHandler)
-    print(f"SIMRS Local Backend berjalan di http://localhost:{port}/v1/attendance/verify")
+    server = ThreadingHTTPServer(("0.0.0.0", port), LocalLambdaRequestHandler)
+    print(f"SIMRS Local Backend berjalan di http://0.0.0.0:{port} & http://localhost:{port}/v1/attendance/verify")
     server.serve_forever()
 
 
