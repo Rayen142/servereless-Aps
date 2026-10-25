@@ -191,6 +191,10 @@ function ThermalPrintReceipt({
           <strong>{patient.noRm}</strong>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Tgl Lahir:</span>
+          <span>{patient.birthDate || '-'}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span>Jaminan:</span>
           <span>{patient.insurance}</span>
         </div>
@@ -891,7 +895,11 @@ function PatientDetails({
       </div>
 
       {/* Ringkasan Medis */}
-      <dl className="mt-4 grid grid-cols-3 gap-3 border-t border-neutral-100 pt-3.5 text-xs">
+      <dl className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 border-t border-neutral-100 pt-3.5 text-xs">
+        <div>
+          <dt className="text-neutral-400">Tgl Lahir</dt>
+          <dd className="mt-0.5 font-medium text-neutral-900">{patient.birthDate || '-'}</dd>
+        </div>
         <div>
           <dt className="text-neutral-400">Gol. Darah</dt>
           <dd className="mt-0.5 font-medium text-neutral-900">{patient.bloodType}</dd>
@@ -907,6 +915,13 @@ function PatientDetails({
           </dd>
         </div>
       </dl>
+
+      {patient.medicalNotes && (
+        <div className="mt-3 rounded-xl bg-sky-50/70 border border-sky-100 p-2.5 text-xs text-sky-950">
+          <p className="text-[10px] font-semibold text-sky-700 uppercase tracking-wider">Catatan Klinis</p>
+          <p className="mt-0.5 text-neutral-800">{patient.medicalNotes}</p>
+        </div>
+      )}
 
       {/* Alergi & Komorbid */}
       <div className="mt-3.5 grid gap-2.5 sm:grid-cols-2 text-xs">
@@ -1070,7 +1085,7 @@ function AttendanceCamera() {
     void refreshQueues();
     const id = window.setInterval(() => {
       void refreshQueues();
-    }, 5000);
+    }, 3500);
     return () => window.clearInterval(id);
   }, [refreshQueues]);
 

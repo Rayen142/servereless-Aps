@@ -37,6 +37,7 @@ export interface RecognizedPerson {
   readonly nim: string;
   readonly nik: string;
   readonly fullName: string;
+  readonly birthDate?: string;
   readonly gender: string;
   readonly age: number;
   readonly bloodType: string;
@@ -45,6 +46,7 @@ export interface RecognizedPerson {
   readonly chronicConditions: string;
   readonly poliklinik: string;
   readonly dokter: string;
+  readonly medicalNotes?: string;
   readonly medicalHistory: readonly MedicalHistoryItem[];
   readonly similarity: number;
   readonly alreadyQueued?: boolean;
@@ -60,6 +62,7 @@ export interface VerificationFeedback {
 export interface EnrollFaceInput {
   readonly fullName: string;
   readonly gender: 'Laki-laki' | 'Perempuan';
+  readonly birthDate?: string;
   readonly noRm?: string;
   readonly nik?: string;
   readonly age?: number;
@@ -218,6 +221,20 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
   const gender = typeof record.gender === 'string' ? record.gender : '-';
   const nik = typeof record.nik === 'string' ? record.nik : '-';
   const age = typeof record.age === 'number' ? record.age : 30;
+  const birthDate =
+    typeof record.birthDate === 'string'
+      ? record.birthDate
+      : typeof record.birth_date === 'string'
+        ? record.birth_date
+        : typeof record.tanggalLahir === 'string'
+          ? record.tanggalLahir
+          : undefined;
+  const medicalNotes =
+    typeof record.medicalNotes === 'string'
+      ? record.medicalNotes
+      : typeof record.medical_notes === 'string'
+        ? record.medical_notes
+        : undefined;
   const bloodType =
     typeof record.bloodType === 'string' ? record.bloodType : 'O+';
   const insurance =
@@ -255,6 +272,7 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
             nim: noRm,
             nik,
             fullName,
+            birthDate,
             gender,
             age,
             bloodType,
@@ -263,6 +281,7 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
             chronicConditions,
             poliklinik,
             dokter,
+            medicalNotes,
             medicalHistory,
             similarity,
             alreadyQueued,
@@ -451,6 +470,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
             action: 'enroll',
             fullName: input.fullName,
             gender: input.gender,
+            birthDate: input.birthDate,
             noRm: input.noRm,
             nik: input.nik,
             age: input.age,

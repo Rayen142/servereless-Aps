@@ -21,6 +21,7 @@ import os
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -75,12 +76,20 @@ _ensure_boto3_stub_if_missing()
 from app import handler  # noqa: E402
 
 
-def _load_face_cascade() -> cv2.CascadeClassifier:
+def _load_face_cascade() -> Any:
+    if not hasattr(cv2, "CascadeClassifier"):
+        return None
     xml_url = "https://cdn.jsdelivr.net/gh/opencv/opencv@4.x/data/haarcascades/haarcascade_frontalface_default.xml"
     xml_path = os.path.join(tempfile.gettempdir(), "haarcascade_frontalface_default.xml")
     if not os.path.exists(xml_path):
-        urllib.request.urlretrieve(xml_url, xml_path)
-    return cv2.CascadeClassifier(xml_path)
+        try:
+            urllib.request.urlretrieve(xml_url, xml_path)
+        except Exception:
+            return None
+    try:
+        return cv2.CascadeClassifier(xml_path)
+    except Exception:
+        return None
 
 
 CASCADE = _load_face_cascade()
@@ -136,10 +145,12 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
     )
     record = {
         "person_id": person_id,
+        "canonical_person_id": resp_payload.get("canonicalPersonId") or person_id,
         "no_rm": resp_payload.get("noRm") or person_id,
         "nim": resp_payload.get("noRm") or person_id,
         "nik": resp_payload.get("nik") or "3273010000000000",
         "full_name": resp_payload["fullName"],
+        "birth_date": resp_payload.get("birthDate") or resp_payload.get("birth_date") or "1995-01-01",
         "gender": gender_code,
         "gender_label": "Laki-laki" if gender_code == "L" else "Perempuan",
         "age": int(resp_payload.get("age") or 30),
@@ -149,6 +160,7 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
         "chronic_conditions": resp_payload.get("chronicConditions") or "Tidak Ada",
         "poliklinik": resp_payload.get("poliklinik") or "Poli Umum",
         "dokter": resp_payload.get("dokter") or "dr. Sinta Maharani",
+        "medical_notes": resp_payload.get("medicalNotes") or resp_payload.get("medical_notes") or "Pasien baru terdaftar",
         "medical_history": resp_payload.get("medicalHistory") or [],
         "enrolled_image": f"images/enrolled/{person_id}.jpg",
         "positive_test_image": f"images/enrolled/{person_id}.jpg",
@@ -167,9 +179,11 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
 
     fieldnames = [
         "person_id",
+        "canonical_person_id",
         "no_rm",
         "nik",
         "full_name",
+        "birth_date",
         "gender",
         "age",
         "blood_type",
@@ -178,6 +192,7 @@ def _save_patient_metadata(resp_payload: dict[str, Any]) -> dict[str, Any]:
         "chronic_conditions",
         "poliklinik",
         "dokter",
+        "medical_notes",
         "enrolled_image",
         "positive_test_image",
     ]
@@ -215,15 +230,20 @@ def _append_medical_history_to_metadata(
 
 
 def _extract_face_roi(gray_img: np.ndarray) -> np.ndarray:
-    faces = CASCADE.detectMultiScale(gray_img, 1.1, 4, minSize=(60, 60))
-    if len(faces) > 0:
-        x, y, w, h = max(faces, key=lambda b: b[2] * b[3])
-        roi = gray_img[y : y + h, x : x + w]
-    else:
-        h, w = gray_img.shape[:2]
-        cy, cx = h // 2, w // 2
-        r = min(h, w) // 4
-        roi = gray_img[cy - r : cy + r, cx - r : cx + r]
+    if CASCADE is not None and hasattr(CASCADE, "detectMultiScale"):
+        try:
+            faces = CASCADE.detectMultiScale(gray_img, 1.1, 4, minSize=(60, 60))
+            if len(faces) > 0:
+                x, y, w, h = max(faces, key=lambda b: b[2] * b[3])
+                roi = gray_img[y : y + h, x : x + w]
+                resized = cv2.resize(roi, (128, 128))
+                return CLAHE.apply(resized)
+        except Exception:
+            pass
+    h, w = gray_img.shape[:2]
+    cy, cx = h // 2, w // 2
+    r = min(h, w) // 4
+    roi = gray_img[cy - r : cy + r, cx - r : cx + r]
     resized = cv2.resize(roi, (128, 128))
     return CLAHE.apply(resized)
 
@@ -399,9 +419,19 @@ LAST_CUSTOM_ENROLLED_ID: str | None = None
 def _build_face_match_from_subject(person_id: str, similarity: float) -> dict[str, Any]:
     subjects_map = _load_subjects_map()
     info = subjects_map.get(person_id, {})
+    canonical_id = info.get("canonical_person_id")
+    if canonical_id and canonical_id in subjects_map:
+        info = subjects_map[canonical_id]
+        person_id = canonical_id
     full_name = info.get("full_name") or person_id
     gender = _format_gender(info.get("gender_label") or info.get("gender") or "")
     no_rm = info.get("no_rm") or info.get("nim") or person_id
+    birth_date = info.get("birth_date") or info.get("birthDate") or "1994-06-15"
+    medical_notes = (
+        info.get("medical_notes")
+        or info.get("medicalNotes")
+        or "Pasien kontrol rutin poliklinik."
+    )
     return {
         "Similarity": similarity,
         "Face": {
@@ -412,6 +442,8 @@ def _build_face_match_from_subject(person_id: str, similarity: float) -> dict[st
             "Nik": info.get("nik") or "3273011405950001",
             "FullName": full_name,
             "Gender": gender,
+            "BirthDate": birth_date,
+            "MedicalNotes": medical_notes,
             "Age": int(info.get("age") or 31),
             "BloodType": info.get("blood_type") or "O+",
             "Insurance": info.get("insurance") or "BPJS Kesehatan",
@@ -443,12 +475,34 @@ def _lookup_patient_manually(
     subjects_map = _load_subjects_map()
     matched_person_id: str | None = None
 
-    # 1. Pencarian eksak pada No. RM, Person ID, atau NIK
+    import re
+    norm_variants = {norm}
+    rm_match = re.match(r"^(?:rm|mhs)?[-_\s]*2026[-_\s]*0*(\d+)$", norm)
+    if rm_match:
+        num = int(rm_match.group(1))
+        norm_variants.add(f"rm-2026-{num:04d}")
+        norm_variants.add(f"rm-2026-{num:03d}")
+        norm_variants.add(f"mhs-2026-{num:04d}")
+        norm_variants.add(f"mhs-2026-{num:03d}")
+    elif norm.isdigit():
+        num = int(norm)
+        if 1 <= num <= 9999:
+            norm_variants.add(f"rm-2026-{num:04d}")
+            norm_variants.add(f"rm-2026-{num:03d}")
+            norm_variants.add(f"mhs-2026-{num:03d}")
+
+    # 1. Pencarian eksak pada No. RM, Person ID, NIK, NIM, atau Aliases
     for pid, info in subjects_map.items():
-        no_rm = str(info.get("no_rm") or "").strip().lower()
-        nik = str(info.get("nik") or "").strip().lower()
-        if norm in (pid.lower(), no_rm, nik):
-            matched_person_id = pid
+        candidates = {
+            pid.lower(),
+            str(info.get("no_rm") or "").strip().lower(),
+            str(info.get("nim") or "").strip().lower(),
+            str(info.get("nik") or "").strip().lower(),
+        }
+        for alias in info.get("aliases", []):
+            candidates.add(str(alias).strip().lower())
+        if norm_variants & candidates:
+            matched_person_id = info.get("canonical_person_id") or pid
             break
 
     # 2. Pencarian substring pada Nama Lengkap atau No. RM / NIK
@@ -457,8 +511,8 @@ def _lookup_patient_manually(
             full_name = str(info.get("full_name") or "").strip().lower()
             no_rm = str(info.get("no_rm") or "").strip().lower()
             nik = str(info.get("nik") or "").strip().lower()
-            if norm in full_name or norm in no_rm or norm in nik:
-                matched_person_id = pid
+            if any(v in full_name or v in no_rm or v in nik for v in norm_variants):
+                matched_person_id = info.get("canonical_person_id") or pid
                 break
 
     if not matched_person_id:
@@ -755,8 +809,23 @@ def _configure_local_handler() -> None:
     mock_rekognition.search_faces_by_image.side_effect = mock_search_faces_by_image
     mock_rekognition.index_faces.side_effect = mock_index_faces
 
+    def mock_get_item(Key: dict[str, Any]) -> dict[str, Any]:
+        pk = str(Key.get("PK", ""))
+        if pk.startswith("QUEUE_STATE_"):
+            prefix = pk.replace("QUEUE_STATE_", "").upper()
+            if handler.QUEUE_STATE_PATH.exists():
+                try:
+                    q_data = json.loads(handler.QUEUE_STATE_PATH.read_text(encoding="utf-8"))
+                    poli_data = q_data.get(prefix)
+                    if poli_data:
+                        return {"Item": {"PK": pk, "SK": "METADATA", **poli_data}}
+                except Exception:
+                    pass
+        return {}
+
     mock_table = MagicMock()
     mock_table.put_item.side_effect = mock_put_item
+    mock_table.get_item.side_effect = mock_get_item
     mock_dynamodb = MagicMock()
     mock_dynamodb.Table.return_value = mock_table
 
@@ -785,14 +854,38 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
         self._send_lambda_response(result)
 
     def do_GET(self) -> None:  # noqa: N802
-        clean_path = self.path.split("?")[0].rstrip("/")
-        if clean_path == "/v1/attendance/queues":
-            queues = handler.get_all_queues_status()
+        parsed_url = urllib.parse.urlparse(self.path)
+        clean_path = parsed_url.path.rstrip("/")
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+
+        if clean_path in ("/v1/attendance/queues", "/queues", "/v1/attendance/queue", "/queue"):
+            poli_param = (query_params.get("poliklinik") or query_params.get("poli") or [None])[0]
+            prefix_param = (query_params.get("prefix") or [None])[0]
+            all_queues = handler.get_all_queues_status()
+            target_queue = None
+            if poli_param:
+                target_queue = handler.get_poli_queue_status(poli_param)
+            elif prefix_param:
+                for q in all_queues:
+                    if q.get("prefix", "").upper() == prefix_param.upper():
+                        target_queue = q
+                        break
+            if not target_queue and all_queues:
+                target_queue = all_queues[0]
+
             self._send_lambda_response(
                 {
                     "statusCode": 200,
                     "headers": handler.CORS_HEADERS,
-                    "body": json.dumps({"count": len(queues), "queues": queues}),
+                    "body": json.dumps(
+                        {
+                            "success": True,
+                            "count": len(all_queues),
+                            "queues": all_queues,
+                            "queue": target_queue,
+                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ),
                 }
             )
             return
@@ -845,9 +938,11 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
             faces_list = [
                 {
                     "personId": s["person_id"],
+                    "canonicalPersonId": s.get("canonical_person_id") or s["person_id"],
                     "noRm": s.get("no_rm") or s.get("nim") or s["person_id"],
                     "nik": s.get("nik", "-"),
                     "fullName": s.get("full_name", s["person_id"]),
+                    "birthDate": s.get("birth_date") or s.get("birthDate") or "-",
                     "gender": _format_gender(
                         s.get("gender_label") or s.get("gender") or ""
                     ),
@@ -858,6 +953,7 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
                     "chronicConditions": s.get("chronic_conditions", "Tidak Ada"),
                     "poliklinik": s.get("poliklinik", "Poli Umum"),
                     "dokter": s.get("dokter", "dr. Sinta Maharani"),
+                    "medicalNotes": s.get("medical_notes") or s.get("medicalNotes") or "-",
                     "medicalHistory": s.get("medical_history", []),
                 }
                 for s in reversed(list(subjects_map.values()))
@@ -882,8 +978,10 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
                         "enroll_endpoint": "POST /v1/attendance/enroll",
                         "lookup_endpoint": "POST /v1/attendance/lookup",
                         "medical_record_endpoint": "POST /v1/attendance/medical-record",
+                        "queue_action_endpoint": "POST /v1/attendance/queue/action",
                         "analytics_endpoint": "GET /v1/attendance/analytics",
                         "queues_endpoint": "GET /v1/attendance/queues",
+                        "queue_endpoint": "GET /v1/attendance/queue",
                         "faces_endpoint": "GET /v1/attendance/faces",
                         "logs_endpoint": "GET /v1/attendance/logs",
                     }
@@ -898,7 +996,7 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
         )
         clean_path = self.path.split("?")[0].rstrip("/")
 
-        # Parse JSON untuk cek apakah aksi lookup_manual atau evaluate
+        # Parse JSON untuk cek aksi
         parsed_body: dict[str, Any] = {}
         if raw_body:
             try:
@@ -921,6 +1019,33 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
                     "statusCode": 200,
                     "headers": handler.CORS_HEADERS,
                     "body": json.dumps({"success": True, "evaluation": eval_report}),
+                }
+            )
+            return
+
+        if (
+            clean_path.endswith("/queue/action")
+            or clean_path.endswith("/queues/advance")
+            or action in ("advance_queue", "queue_action", "call_next", "complete", "recall", "reset")
+            or "queueAction" in parsed_body
+        ):
+            poli_name = str(parsed_body.get("poliklinik") or "Poli Penyakit Dalam").strip()
+            queue_action = str(parsed_body.get("queueAction") or action or "call_next").strip().lower()
+            updated_queue = handler.advance_poli_queue(poli_name, queue_action=queue_action)
+            self._send_lambda_response(
+                {
+                    "statusCode": 200,
+                    "headers": handler.CORS_HEADERS,
+                    "body": json.dumps(
+                        {
+                            "success": True,
+                            "status": "QUEUE_ADVANCED",
+                            "action": queue_action,
+                            "queue": updated_queue,
+                            "queues": handler.get_all_queues_status(),
+                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ),
                 }
             )
             return

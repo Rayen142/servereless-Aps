@@ -39,6 +39,36 @@ Resources:
             RestApiId: !Ref AttendanceApi
             Path: /attendance/enroll
             Method: post
+        GetQueue:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/queue
+            Method: get
+        GetQueues:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/queues
+            Method: get
+        PostQueueAction:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/queue/action
+            Method: post
+        PostQueuesAdvance:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/queues/advance
+            Method: post
+        AddMedicalRecord:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/medical-record
+            Method: post
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AttendanceTable

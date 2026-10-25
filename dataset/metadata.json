@@ -1,14 +1,15 @@
 {
   "collection_id_default": "attendance-faces",
   "match_threshold_default": 80.0,
-  "total_enrolled": 24,
+  "total_enrolled": 26,
   "subjects": [
     {
       "person_id": "MHS-2026-001",
-      "no_rm": "RM-2026-001",
-      "nim": "RM-2026-001",
+      "no_rm": "RM-2026-0001",
+      "nim": "RM-2026-0001",
       "nik": "3273011405950001",
       "full_name": "Aditya Pratama",
+      "birth_date": "1995-05-14",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 31,
@@ -18,6 +19,7 @@
       "chronic_conditions": "Hipertensi Ringan",
       "poliklinik": "Poli Penyakit Dalam",
       "dokter": "dr. Hendra Wijaya, Sp.PD",
+      "medical_notes": "Hipertensi esensial (I10), kontrol rutin tekanan darah & diet rendah garam",
       "medical_history": [
         {
           "date": "2026-09-18",
@@ -39,10 +41,11 @@
     },
     {
       "person_id": "MHS-2026-002",
-      "no_rm": "RM-2026-002",
-      "nim": "RM-2026-002",
+      "no_rm": "RM-2026-0002",
+      "nim": "RM-2026-0002",
       "nik": "3273025808990002",
       "full_name": "Nabila Putri Maharani",
+      "birth_date": "1999-08-25",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 27,
@@ -52,6 +55,7 @@
       "chronic_conditions": "Asma Bronkial",
       "poliklinik": "Poli Paru & Pernapasan",
       "dokter": "dr. Faisal Rahman, Sp.P",
+      "medical_notes": "Asma bronkial terkontrol (J45.9), evaluasi kapasitas paru & inhaler berkala",
       "medical_history": [
         {
           "date": "2026-09-25",
@@ -73,10 +77,11 @@
     },
     {
       "person_id": "MHS-2026-003",
-      "no_rm": "RM-2026-003",
-      "nim": "RM-2026-003",
+      "no_rm": "RM-2026-0003",
+      "nim": "RM-2026-0003",
       "nik": "3273032101880003",
       "full_name": "Rizky Ramadhan",
+      "birth_date": "1988-01-21",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 38,
@@ -86,6 +91,7 @@
       "chronic_conditions": "Diabetes Melitus Tipe 2",
       "poliklinik": "Poli Penyakit Dalam",
       "dokter": "dr. Hendra Wijaya, Sp.PD",
+      "medical_notes": "Diabetes melitus tipe 2 (E11), kontrol rutin HbA1c & diet glikemik",
       "medical_history": [
         {
           "date": "2026-09-10",
@@ -100,10 +106,11 @@
     },
     {
       "person_id": "MHS-2026-004",
-      "no_rm": "RM-2026-004",
-      "nim": "RM-2026-004",
+      "no_rm": "RM-2026-0004",
+      "nim": "RM-2026-0004",
       "nik": "3273046204960004",
       "full_name": "Aulia Rahmawati",
+      "birth_date": "1996-04-20",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 30,
@@ -113,6 +120,7 @@
       "chronic_conditions": "Tidak Ada",
       "poliklinik": "Poli Mata",
       "dokter": "dr. Ratna Kusuma, Sp.M",
+      "medical_notes": "Miopia & astigmatisme (H52.1), koreksi kacamata refraksi",
       "medical_history": [
         {
           "date": "2026-08-29",
@@ -127,10 +135,11 @@
     },
     {
       "person_id": "MHS-2026-005",
-      "no_rm": "RM-2026-005",
-      "nim": "RM-2026-005",
+      "no_rm": "RM-2026-0005",
+      "nim": "RM-2026-0005",
       "nik": "3273051907920005",
       "full_name": "Fajar Nugroho",
+      "birth_date": "1992-07-19",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 34,
@@ -140,6 +149,7 @@
       "chronic_conditions": "Dislipidemia",
       "poliklinik": "Poli Jantung",
       "dokter": "dr. Bambang Hartono, Sp.JP",
+      "medical_notes": "Hiperkolesterolemia (E78.0), evaluasi profil lipid & EKG berkala",
       "medical_history": [
         {
           "date": "2026-09-02",
@@ -154,10 +164,11 @@
     },
     {
       "person_id": "MHS-2026-006",
-      "no_rm": "RM-2026-006",
-      "nim": "RM-2026-006",
+      "no_rm": "RM-2026-0006",
+      "nim": "RM-2026-0006",
       "nik": "3273064511980006",
       "full_name": "Siti Nurhaliza",
+      "birth_date": "1998-11-04",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 28,
@@ -167,6 +178,7 @@
       "chronic_conditions": "Tidak Ada",
       "poliklinik": "Poli Gigi & Mulut",
       "dokter": "drg. Nadia Larasati",
+      "medical_notes": "Pulpitis irreversible molar 1 (K04.0), perawatan saluran akar",
       "medical_history": [
         {
           "date": "2026-09-14",
@@ -181,10 +193,11 @@
     },
     {
       "person_id": "MHS-2026-007",
-      "no_rm": "RM-2026-007",
-      "nim": "RM-2026-007",
+      "no_rm": "RM-2026-0007",
+      "nim": "RM-2026-0007",
       "nik": "3273071103910007",
       "full_name": "Dimas Wahyu Saputra",
+      "birth_date": "1991-03-11",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 35,
@@ -194,6 +207,7 @@
       "chronic_conditions": "Vertigo Perifer",
       "poliklinik": "Poli Saraf (Neurologi)",
       "dokter": "dr. Arifin Putra, Sp.N",
+      "medical_notes": "Benign Paroxysmal Positional Vertigo (H81.1), terapi vestibular & flunarizine",
       "medical_history": [
         {
           "date": "2026-09-21",
@@ -208,10 +222,11 @@
     },
     {
       "person_id": "MHS-2026-008",
-      "no_rm": "RM-2026-008",
-      "nim": "RM-2026-008",
+      "no_rm": "RM-2026-0008",
+      "nim": "RM-2026-0008",
       "nik": "3273085409970008",
       "full_name": "Intan Permatasari",
+      "birth_date": "1997-09-05",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 29,
@@ -221,6 +236,7 @@
       "chronic_conditions": "Dermatitis Atopik",
       "poliklinik": "Poli Kulit & Kelamin",
       "dokter": "dr. Clara Wijaya, Sp.KK",
+      "medical_notes": "Dermatitis atopik (L20), perawatan barrier kulit & antihistamin",
       "medical_history": [
         {
           "date": "2026-08-30",
@@ -235,10 +251,11 @@
     },
     {
       "person_id": "MHS-2026-009",
-      "no_rm": "RM-2026-009",
-      "nim": "RM-2026-009",
+      "no_rm": "RM-2026-0009",
+      "nim": "RM-2026-0009",
       "nik": "3273092812850009",
       "full_name": "Bagas Kurniawan",
+      "birth_date": "1985-12-28",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 40,
@@ -248,6 +265,7 @@
       "chronic_conditions": "Asam Urat (Gout)",
       "poliklinik": "Poli Penyakit Dalam",
       "dokter": "dr. Hendra Wijaya, Sp.PD",
+      "medical_notes": "Gout arthritis (M10.9), kontrol asam urat & diet rendah purin",
       "medical_history": [
         {
           "date": "2026-09-19",
@@ -262,10 +280,11 @@
     },
     {
       "person_id": "MHS-2026-010",
-      "no_rm": "RM-2026-010",
-      "nim": "RM-2026-010",
+      "no_rm": "RM-2026-0010",
+      "nim": "RM-2026-0010",
       "nik": "3273106002940010",
       "full_name": "Dewi Anggraini",
+      "birth_date": "1994-02-16",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 32,
@@ -275,6 +294,7 @@
       "chronic_conditions": "Tidak Ada",
       "poliklinik": "Poli THT",
       "dokter": "dr. Lukman Hakim, Sp.THT-KL",
+      "medical_notes": "Rhinitis alergi (J30.4), fluticasone nasal spray & kontrol pemicu alergi",
       "medical_history": [
         {
           "date": "2026-09-05",
@@ -289,10 +309,11 @@
     },
     {
       "person_id": "MHS-2026-011",
-      "no_rm": "RM-2026-011",
-      "nim": "RM-2026-011",
+      "no_rm": "RM-2026-0011",
+      "nim": "RM-2026-0011",
       "nik": "3273111506900011",
       "full_name": "Ilham Maulana",
+      "birth_date": "1990-06-15",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 36,
@@ -302,6 +323,7 @@
       "chronic_conditions": "Nyeri Punggung Bawah",
       "poliklinik": "Poli Ortopedi",
       "dokter": "dr. Kevin Santoso, Sp.OT",
+      "medical_notes": "Low back pain / muscle spasm (M54.5), rujukan fisioterapi lumbosakral",
       "medical_history": [
         {
           "date": "2026-09-11",
@@ -316,10 +338,11 @@
     },
     {
       "person_id": "MHS-2026-012",
-      "no_rm": "RM-2026-012",
-      "nim": "RM-2026-012",
+      "no_rm": "RM-2026-0012",
+      "nim": "RM-2026-0012",
       "nik": "3273124903980012",
       "full_name": "Putri Ayu Lestari",
+      "birth_date": "1998-03-24",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 28,
@@ -329,6 +352,7 @@
       "chronic_conditions": "Migrain Kronis",
       "poliklinik": "Poli Saraf (Neurologi)",
       "dokter": "dr. Arifin Putra, Sp.N",
+      "medical_notes": "Migraine without aura (G43.0), terapi triptan & edukasi pola tidur",
       "medical_history": [
         {
           "date": "2026-09-22",
@@ -343,10 +367,11 @@
     },
     {
       "person_id": "MHS-2026-013",
-      "no_rm": "RM-2026-013",
-      "nim": "RM-2026-013",
+      "no_rm": "RM-2026-0013",
+      "nim": "RM-2026-0013",
       "nik": "3273130810870013",
       "full_name": "Reza Pahlevi",
+      "birth_date": "1987-10-08",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 39,
@@ -356,6 +381,7 @@
       "chronic_conditions": "GERD",
       "poliklinik": "Poli Penyakit Dalam",
       "dokter": "dr. Hendra Wijaya, Sp.PD",
+      "medical_notes": "Gastroesophageal reflux disease (K21.9), terapi PPI & sukralfat",
       "medical_history": [
         {
           "date": "2026-09-15",
@@ -370,10 +396,11 @@
     },
     {
       "person_id": "MHS-2026-014",
-      "no_rm": "RM-2026-014",
-      "nim": "RM-2026-014",
+      "no_rm": "RM-2026-0014",
+      "nim": "RM-2026-0014",
       "nik": "3273145207990014",
       "full_name": "Anisa Fitriani",
+      "birth_date": "1999-07-25",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 27,
@@ -383,6 +410,7 @@
       "chronic_conditions": "Anemia Defisiensi Besi",
       "poliklinik": "Poli Umum",
       "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Anemia defisiensi besi (D50.9), suplementasi ferosulfat & evaluasi Hb",
       "medical_history": [
         {
           "date": "2026-09-08",
@@ -397,10 +425,11 @@
     },
     {
       "person_id": "MHS-2026-015",
-      "no_rm": "RM-2026-015",
-      "nim": "RM-2026-015",
+      "no_rm": "RM-2026-0015",
+      "nim": "RM-2026-0015",
       "nik": "3273152304830015",
       "full_name": "Hendra Gunawan",
+      "birth_date": "1983-04-23",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 43,
@@ -410,6 +439,7 @@
       "chronic_conditions": "Hipertensi & Kolesterol",
       "poliklinik": "Poli Jantung",
       "dokter": "dr. Bambang Hartono, Sp.JP",
+      "medical_notes": "Hypertensive heart disease (I11.9), kontrol tekanan darah & lipid rutin",
       "medical_history": [
         {
           "date": "2026-09-27",
@@ -424,10 +454,11 @@
     },
     {
       "person_id": "MHS-2026-016",
-      "no_rm": "RM-2026-016",
-      "nim": "RM-2026-016",
+      "no_rm": "RM-2026-0016",
+      "nim": "RM-2026-0016",
       "nik": "3273166701960016",
       "full_name": "Citra Kirana Dewi",
+      "birth_date": "1996-01-07",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 30,
@@ -437,6 +468,7 @@
       "chronic_conditions": "Tidak Ada",
       "poliklinik": "Poli Gigi & Mulut",
       "dokter": "drg. Nadia Larasati",
+      "medical_notes": "Calculus dental (K03.6), pembersihan karang gigi & kontrol periodonsium",
       "medical_history": [
         {
           "date": "2026-08-19",
@@ -451,10 +483,11 @@
     },
     {
       "person_id": "MHS-2026-017",
-      "no_rm": "RM-2026-017",
-      "nim": "RM-2026-017",
+      "no_rm": "RM-2026-0017",
+      "nim": "RM-2026-0017",
       "nik": "3273171209890017",
       "full_name": "Arif Budiman",
+      "birth_date": "1989-09-12",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 37,
@@ -464,6 +497,7 @@
       "chronic_conditions": "Sinusitis",
       "poliklinik": "Poli THT",
       "dokter": "dr. Lukman Hakim, Sp.THT-KL",
+      "medical_notes": "Sinusitis maksilaris akut (J01.0), terapi dekongestan & antibiotik",
       "medical_history": [
         {
           "date": "2026-09-12",
@@ -478,10 +512,11 @@
     },
     {
       "person_id": "MHS-2026-018",
-      "no_rm": "RM-2026-018",
-      "nim": "RM-2026-018",
+      "no_rm": "RM-2026-0018",
+      "nim": "RM-2026-0018",
       "nik": "3273184405970018",
       "full_name": "Larasati Kusuma",
+      "birth_date": "1997-05-14",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 29,
@@ -491,6 +526,7 @@
       "chronic_conditions": "Mata Kering (Dry Eye)",
       "poliklinik": "Poli Mata",
       "dokter": "dr. Ratna Kusuma, Sp.M",
+      "medical_notes": "Dry eye syndrome (H04.12), tetes air mata buatan & observasi kornea",
       "medical_history": [
         {
           "date": "2026-09-20",
@@ -505,10 +541,11 @@
     },
     {
       "person_id": "MHS-2026-019",
-      "no_rm": "RM-2026-019",
-      "nim": "RM-2026-019",
+      "no_rm": "RM-2026-0019",
+      "nim": "RM-2026-0019",
       "nik": "3273192911930019",
       "full_name": "Yoga Pratama Putra",
+      "birth_date": "1993-11-29",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 32,
@@ -518,6 +555,7 @@
       "chronic_conditions": "Tidak Ada",
       "poliklinik": "Poli Umum",
       "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Observasi febris (R50.9), evaluasi darah rutin & terapi simtomatik",
       "medical_history": [
         {
           "date": "2026-09-17",
@@ -532,10 +570,11 @@
     },
     {
       "person_id": "MHS-2026-020",
-      "no_rm": "RM-2026-020",
-      "nim": "RM-2026-020",
+      "no_rm": "RM-2026-0020",
+      "nim": "RM-2026-0020",
       "nik": "3273205508950020",
       "full_name": "Rania Safitri",
+      "birth_date": "1995-08-15",
       "gender": "P",
       "gender_label": "Perempuan",
       "age": 31,
@@ -545,6 +584,7 @@
       "chronic_conditions": "Bronkitis Alergi",
       "poliklinik": "Poli Paru & Pernapasan",
       "dokter": "dr. Faisal Rahman, Sp.P",
+      "medical_notes": "Bronkitis akut (J20.9), ekspektoran & bronkodilator",
       "medical_history": [
         {
           "date": "2026-09-24",
@@ -559,80 +599,154 @@
     },
     {
       "person_id": "RM-2026-501B",
+      "canonical_person_id": "RM-2026-501B",
       "no_rm": "RM-2026-501B",
       "nim": "RM-2026-501B",
-      "nik": "82361823617286",
+      "nik": "3273012304070001",
       "full_name": "Candra Hidayattuloh",
+      "birth_date": "2007-04-12",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 19,
       "blood_type": "B+",
       "insurance": "Umum",
-      "allergies": "tidak ada",
-      "chronic_conditions": "tidak ada",
+      "allergies": "Tidak Ada Alergi",
+      "chronic_conditions": "Tidak Ada",
       "poliklinik": "Poli Umum",
       "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Observasi demam, batuk pilek & pusing; riwayat tanda vital normal stabil",
       "medical_history": [
+        {
+          "date": "2026-10-24",
+          "poliklinik": "Poli Kulit & Kelamin",
+          "doctor": "dr. Clara Wijaya, Sp.KK",
+          "diagnosis": "Batuk & pusing, observasi tanda vital",
+          "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
+        },
         {
           "date": "2026-10-11",
           "poliklinik": "Poli Umum",
           "doctor": "dr. Sinta Maharani",
-          "diagnosis": "demam, batuk",
-          "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
+          "diagnosis": "Observasi Febris, Demam & batuk pilek",
+          "treatment": "Pemeriksaan tanda vital, Paracetamol 500mg, Ambroxol sirup"
         }
       ],
       "enrolled_image": "images/enrolled/RM-2026-501B.jpg",
-      "positive_test_image": "images/enrolled/RM-2026-501B.jpg"
+      "positive_test_image": "images/enrolled/RM-2026-501B.jpg",
+      "linked_face_ids": [
+        "RM-2026-501B",
+        "RM-2026-58DB",
+        "RM-2026-A204",
+        "2702385671",
+        "MHS-WEBCAM-USER"
+      ]
     },
     {
-      "person_id": "RM-2026-F2C2",
-      "no_rm": "RM-2026-F2C2",
-      "nim": "RM-2026-F2C2",
-      "nik": "1231111602980007",
-      "full_name": "SYAMANZA",
-      "gender": "L",
-      "gender_label": "Laki-laki",
-      "age": 21,
-      "blood_type": "B+",
-      "insurance": "Umum",
-      "allergies": "tidak ada",
-      "chronic_conditions": "usus buntu",
-      "poliklinik": "Poli Umum",
-      "dokter": "dr. Sinta Maharani",
-      "medical_history": [
-        {
-          "date": "2026-10-11",
-          "poliklinik": "Poli Umum",
-          "doctor": "dr. Sinta Maharani",
-          "diagnosis": "perih",
-          "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
-        }
-      ],
-      "enrolled_image": "images/enrolled/RM-2026-F2C2.jpg",
-      "positive_test_image": "images/enrolled/RM-2026-F2C2.jpg"
-    },
-    {
-      "person_id": "RM-2026-58DB",
-      "no_rm": "RM-2026-58DB",
-      "nim": "RM-2026-58DB",
-      "nik": "218231386123",
-      "full_name": "Candracann",
+      "person_id": "2702385671",
+      "canonical_person_id": "RM-2026-501B",
+      "no_rm": "RM-2026-501B",
+      "nim": "RM-2026-501B",
+      "nik": "3273012304070001",
+      "full_name": "Candra Hidayattuloh",
+      "birth_date": "2007-04-12",
       "gender": "L",
       "gender_label": "Laki-laki",
       "age": 19,
       "blood_type": "B+",
       "insurance": "Umum",
-      "allergies": "tidak ada",
-      "chronic_conditions": "tidak ada",
+      "allergies": "Tidak Ada Alergi",
+      "chronic_conditions": "Tidak Ada",
       "poliklinik": "Poli Umum",
       "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Observasi demam, batuk pilek & pusing; riwayat tanda vital normal stabil",
       "medical_history": [
+        {
+          "date": "2026-10-24",
+          "poliklinik": "Poli Kulit & Kelamin",
+          "doctor": "dr. Clara Wijaya, Sp.KK",
+          "diagnosis": "Batuk & pusing, observasi tanda vital",
+          "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
+        },
         {
           "date": "2026-10-11",
           "poliklinik": "Poli Umum",
           "doctor": "dr. Sinta Maharani",
-          "diagnosis": "batuk pilek",
+          "diagnosis": "Observasi Febris, Demam & batuk pilek",
+          "treatment": "Pemeriksaan tanda vital, Paracetamol 500mg, Ambroxol sirup"
+        }
+      ],
+      "enrolled_image": "images/enrolled/2702385671.jpg",
+      "positive_test_image": "images/enrolled/2702385671.jpg"
+    },
+    {
+      "person_id": "MHS-WEBCAM-USER",
+      "canonical_person_id": "RM-2026-501B",
+      "no_rm": "RM-2026-501B",
+      "nim": "RM-2026-501B",
+      "nik": "3273012304070001",
+      "full_name": "Candra Hidayattuloh",
+      "birth_date": "2007-04-12",
+      "gender": "L",
+      "gender_label": "Laki-laki",
+      "age": 19,
+      "blood_type": "B+",
+      "insurance": "Umum",
+      "allergies": "Tidak Ada Alergi",
+      "chronic_conditions": "Tidak Ada",
+      "poliklinik": "Poli Umum",
+      "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Observasi demam, batuk pilek & pusing; riwayat tanda vital normal stabil",
+      "medical_history": [
+        {
+          "date": "2026-10-24",
+          "poliklinik": "Poli Kulit & Kelamin",
+          "doctor": "dr. Clara Wijaya, Sp.KK",
+          "diagnosis": "Batuk & pusing, observasi tanda vital",
           "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
+        },
+        {
+          "date": "2026-10-11",
+          "poliklinik": "Poli Umum",
+          "doctor": "dr. Sinta Maharani",
+          "diagnosis": "Observasi Febris, Demam & batuk pilek",
+          "treatment": "Pemeriksaan tanda vital, Paracetamol 500mg, Ambroxol sirup"
+        }
+      ],
+      "enrolled_image": "images/enrolled/MHS-WEBCAM-USER.jpg",
+      "positive_test_image": "images/enrolled/MHS-WEBCAM-USER.jpg"
+    },
+    {
+      "person_id": "RM-2026-58DB",
+      "canonical_person_id": "RM-2026-501B",
+      "no_rm": "RM-2026-501B",
+      "nim": "RM-2026-501B",
+      "nik": "3273012304070001",
+      "full_name": "Candra Hidayattuloh",
+      "birth_date": "2007-04-12",
+      "gender": "L",
+      "gender_label": "Laki-laki",
+      "age": 19,
+      "blood_type": "B+",
+      "insurance": "Umum",
+      "allergies": "Tidak Ada Alergi",
+      "chronic_conditions": "Tidak Ada",
+      "poliklinik": "Poli Umum",
+      "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Observasi demam, batuk pilek & pusing; riwayat tanda vital normal stabil",
+      "medical_history": [
+        {
+          "date": "2026-10-24",
+          "poliklinik": "Poli Kulit & Kelamin",
+          "doctor": "dr. Clara Wijaya, Sp.KK",
+          "diagnosis": "Batuk & pusing, observasi tanda vital",
+          "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
+        },
+        {
+          "date": "2026-10-11",
+          "poliklinik": "Poli Umum",
+          "doctor": "dr. Sinta Maharani",
+          "diagnosis": "Observasi Febris, Demam & batuk pilek",
+          "treatment": "Pemeriksaan tanda vital, Paracetamol 500mg, Ambroxol sirup"
         }
       ],
       "enrolled_image": "images/enrolled/RM-2026-58DB.jpg",
@@ -640,30 +754,70 @@
     },
     {
       "person_id": "RM-2026-A204",
-      "no_rm": "RM-2026-A204",
-      "nim": "RM-2026-A204",
-      "nik": "3621736528163297",
-      "full_name": "Candra hidayattuloh",
+      "canonical_person_id": "RM-2026-501B",
+      "no_rm": "RM-2026-501B",
+      "nim": "RM-2026-501B",
+      "nik": "3273012304070001",
+      "full_name": "Candra Hidayattuloh",
+      "birth_date": "2007-04-12",
       "gender": "L",
       "gender_label": "Laki-laki",
-      "age": 21,
+      "age": 19,
       "blood_type": "B+",
-      "insurance": "Umum (Mandiri)",
-      "allergies": "tidak ada",
-      "chronic_conditions": "tidak ada",
-      "poliklinik": "Poli Kulit & Kelamin",
-      "dokter": "dr. Clara Wijaya, Sp.KK",
+      "insurance": "Umum",
+      "allergies": "Tidak Ada Alergi",
+      "chronic_conditions": "Tidak Ada",
+      "poliklinik": "Poli Umum",
+      "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Observasi demam, batuk pilek & pusing; riwayat tanda vital normal stabil",
       "medical_history": [
         {
           "date": "2026-10-24",
           "poliklinik": "Poli Kulit & Kelamin",
           "doctor": "dr. Clara Wijaya, Sp.KK",
-          "diagnosis": "batuk pusing",
+          "diagnosis": "Batuk & pusing, observasi tanda vital",
           "treatment": "Pendaftaran Pasien Baru & Pemeriksaan Tanda Vital"
+        },
+        {
+          "date": "2026-10-11",
+          "poliklinik": "Poli Umum",
+          "doctor": "dr. Sinta Maharani",
+          "diagnosis": "Observasi Febris, Demam & batuk pilek",
+          "treatment": "Pemeriksaan tanda vital, Paracetamol 500mg, Ambroxol sirup"
         }
       ],
       "enrolled_image": "images/enrolled/RM-2026-A204.jpg",
       "positive_test_image": "images/enrolled/RM-2026-A204.jpg"
+    },
+    {
+      "person_id": "RM-2026-F2C2",
+      "canonical_person_id": "RM-2026-F2C2",
+      "no_rm": "RM-2026-F2C2",
+      "nim": "RM-2026-F2C2",
+      "nik": "1231111602980007",
+      "full_name": "SYAMANZA",
+      "birth_date": "2005-02-16",
+      "gender": "L",
+      "gender_label": "Laki-laki",
+      "age": 21,
+      "blood_type": "B+",
+      "insurance": "Umum",
+      "allergies": "Tidak Ada Alergi",
+      "chronic_conditions": "Observasi Appendicitis (Usus Buntu)",
+      "poliklinik": "Poli Umum",
+      "dokter": "dr. Sinta Maharani",
+      "medical_notes": "Nyeri perut kanan bawah / observasi appendicitis / perih lambung",
+      "medical_history": [
+        {
+          "date": "2026-10-11",
+          "poliklinik": "Poli Umum",
+          "doctor": "dr. Sinta Maharani",
+          "diagnosis": "Nyeri perut kanan bawah (obs. appendicitis) & gastritis",
+          "treatment": "Pemeriksaan tanda vital, Antasida, evaluasi bedah umum"
+        }
+      ],
+      "enrolled_image": "images/enrolled/RM-2026-F2C2.jpg",
+      "positive_test_image": "images/enrolled/RM-2026-F2C2.jpg"
     }
   ]
 }

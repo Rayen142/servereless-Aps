@@ -94,30 +94,30 @@ DEFAULT_INITIAL_QUEUES: dict[str, dict[str, int]] = {
     "OR": {"serving": 1, "issued": 2},
 }
 
-# Pasien awal di ruang tunggu menggunakan nomor RM seri 800 agar tidak bentrok
-# dengan 20 subjek uji dataset (RM-2026-001 s/d RM-2026-020).
+# Pasien awal di ruang tunggu menggunakan nomor RM seri 0800 agar tidak bentrok
+# dengan 20 subjek uji dataset (RM-2026-0001 s/d RM-2026-0020).
 DEFAULT_QUEUE_PATIENTS: dict[str, dict[int, dict[str, str]]] = {
     "PD": {
-        2: {"fullName": "Surya Darmawan", "noRm": "RM-2026-801"},
-        3: {"fullName": "Lestari Wulandari", "noRm": "RM-2026-802"},
-        4: {"fullName": "Bagus Setiawan", "noRm": "RM-2026-803"},
-        5: {"fullName": "Kartika Sari", "noRm": "RM-2026-804"},
+        2: {"fullName": "Surya Darmawan", "noRm": "RM-2026-0801"},
+        3: {"fullName": "Lestari Wulandari", "noRm": "RM-2026-0802"},
+        4: {"fullName": "Bagus Setiawan", "noRm": "RM-2026-0803"},
+        5: {"fullName": "Kartika Sari", "noRm": "RM-2026-0804"},
     },
     "UM": {
-        4: {"fullName": "Wahyu Hidayat", "noRm": "RM-2026-805"},
-        5: {"fullName": "Ratih Permata", "noRm": "RM-2026-806"},
-        6: {"fullName": "Kurniawan Putra", "noRm": "RM-2026-807"},
-        7: {"fullName": "Yuni Astuti", "noRm": "RM-2026-808"},
+        4: {"fullName": "Wahyu Hidayat", "noRm": "RM-2026-0805"},
+        5: {"fullName": "Ratih Permata", "noRm": "RM-2026-0806"},
+        6: {"fullName": "Kurniawan Putra", "noRm": "RM-2026-0807"},
+        7: {"fullName": "Yuni Astuti", "noRm": "RM-2026-0808"},
     },
     "JT": {
-        1: {"fullName": "Hermawan Susanto", "noRm": "RM-2026-809"},
-        2: {"fullName": "Sri Wahyuni", "noRm": "RM-2026-810"},
-        3: {"fullName": "Taufik Hidayat", "noRm": "RM-2026-811"},
+        1: {"fullName": "Hermawan Susanto", "noRm": "RM-2026-0809"},
+        2: {"fullName": "Sri Wahyuni", "noRm": "RM-2026-0810"},
+        3: {"fullName": "Taufik Hidayat", "noRm": "RM-2026-0811"},
     },
     "PR": {
-        2: {"fullName": "Rudi Hartono", "noRm": "RM-2026-812"},
-        3: {"fullName": "Indah Permatasari", "noRm": "RM-2026-813"},
-        4: {"fullName": "Anton Wijaya", "noRm": "RM-2026-814"},
+        2: {"fullName": "Rudi Hartono", "noRm": "RM-2026-0812"},
+        3: {"fullName": "Indah Permatasari", "noRm": "RM-2026-0813"},
+        4: {"fullName": "Anton Wijaya", "noRm": "RM-2026-0814"},
     },
 }
 
@@ -140,12 +140,43 @@ _custom_medical_records: dict[str, list[dict[str, str]]] = {}
 MINUTES_PER_PATIENT = 8
 
 
-def _save_queue_state() -> None:
+def _save_queue_state_to_dynamodb(prefix: str | None = None) -> None:
+    try:
+        table = _get_attendance_table()
+        prefixes = [prefix] if prefix else list(DEFAULT_INITIAL_QUEUES.keys())
+        for p in prefixes:
+            poli_name = next(
+                (k for k, v in POLIKLINIK_CONFIG.items() if v["prefix"] == p),
+                f"Poli {p}",
+            )
+            issued = _queue_counter.get(p, 1)
+            serving = _serving_counter.get(p, 1)
+            status = _serving_status.get(p, "DIPANGGIL")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            item = {
+                "attendanceId": f"QUEUE_STATE_{p}",
+                "Timestamp": now_iso,
+                "Prefix": p,
+                "Poliklinik": poli_name,
+                "LatestSequence": issued,
+                "LatestQueueNumber": f"{p}-{issued:03d}",
+                "CurrentServingSequence": serving,
+                "CurrentServingNumber": f"{p}-{serving:03d}",
+                "ServingStatus": status,
+                "TotalWaiting": max(0, issued - serving),
+                "Status": "QUEUE_STATE",
+            }
+            table.put_item(Item=item)
+    except Exception:
+        pass
+
+
+def _save_queue_state(prefix: str | None = None) -> None:
     try:
         QUEUE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         serializable_patients = {
-            prefix: {str(k): v for k, v in pmap.items()}
-            for prefix, pmap in _queue_patients.items()
+            prefix_key: {str(k): v for k, v in pmap.items()}
+            for prefix_key, pmap in _queue_patients.items()
         }
         state = {
             "queue_counter": _queue_counter,
@@ -160,6 +191,7 @@ def _save_queue_state() -> None:
         )
     except Exception:
         pass
+    _save_queue_state_to_dynamodb(prefix)
 
 
 def _load_queue_state() -> None:
@@ -201,7 +233,7 @@ def _get_patient_for_queue(prefix: str, seq: int) -> dict[str, str]:
         return poli_map[seq]
     return {
         "fullName": f"Pasien {prefix}-{seq:03d}",
-        "noRm": f"RM-2026-{seq:03d}",
+        "noRm": f"RM-2026-{seq:04d}",
     }
 
 
@@ -297,7 +329,7 @@ def advance_poli_queue(
             _serving_counter[prefix] = serving_seq
         _serving_status[prefix] = "DIPANGGIL"
 
-    _save_queue_state()
+    _save_queue_state(prefix)
     return get_poli_queue_snapshot(poli_name)
 
 
@@ -487,7 +519,7 @@ def _generate_queue_ticket(
 
     full_name = str(patient.get("fullName") or f"Pasien {prefix}-{seq:03d}")
     if not no_rm:
-        no_rm = f"RM-2026-{seq:03d}"
+        no_rm = f"RM-2026-{seq:04d}"
 
     _queue_patients.setdefault(prefix, {})[seq] = {
         "fullName": full_name,
@@ -536,7 +568,7 @@ def _generate_queue_ticket(
     if image_hash:
         _patient_active_tickets[f"IMG:{image_hash.upper()}"] = ticket
 
-    _save_queue_state()
+    _save_queue_state(prefix)
     return ticket
 
 
@@ -550,6 +582,20 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
     no_rm = face.get("NoRm") or face.get("Nim") or person_id
     poliklinik = face.get("Poliklinik") or "Poli Penyakit Dalam"
     poli_info = POLIKLINIK_CONFIG.get(poliklinik, {})
+
+    birth_date = (
+        face.get("BirthDate")
+        or face.get("birthDate")
+        or face.get("TanggalLahir")
+        or face.get("tanggal_lahir")
+        or "1995-01-01"
+    )
+    medical_notes = (
+        face.get("MedicalNotes")
+        or face.get("medicalNotes")
+        or face.get("medical_notes")
+        or ""
+    )
 
     base_history = list(face.get("MedicalHistory") or [])
     extra_history = _custom_medical_records.get(
@@ -569,6 +615,7 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
         "nim": no_rm,
         "nik": face.get("Nik") or "3273010000000001",
         "fullName": face.get("FullName") or person_id,
+        "birthDate": birth_date,
         "gender": face.get("Gender") or "-",
         "age": int(face.get("Age") or 30),
         "bloodType": face.get("BloodType") or "O+",
@@ -578,6 +625,7 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
         "poliklinik": poliklinik,
         "dokter": face.get("Dokter")
         or poli_info.get("dokter", "dr. Hendra Wijaya, Sp.PD"),
+        "medicalNotes": medical_notes,
         "medicalHistory": merged_history,
         "similarity": similarity,
     }
@@ -794,9 +842,36 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     )
     if method == "OPTIONS":
         return _json_response(200, {"success": True})
+
+    path = str(event.get("path") or "").rstrip("/")
+
+    # Handle GET /queue and GET /queues
+    if method == "GET":
+        query_params = event.get("queryStringParameters") or {}
+        if not isinstance(query_params, dict):
+            query_params = {}
+        poli_name = query_params.get("poliklinik") or query_params.get("poli")
+        prefix = query_params.get("prefix")
+        if not poli_name and prefix:
+            poli_name = next(
+                (k for k, v in POLIKLINIK_CONFIG.items() if v["prefix"].upper() == prefix.upper()),
+                None,
+            )
+        snapshot = get_poli_queue_snapshot(poli_name) if poli_name else get_all_queues_status()[0]
+        return _json_response(
+            200,
+            {
+                "success": True,
+                "count": len(POLIKLINIK_CONFIG),
+                "queue": snapshot,
+                "queues": get_all_queues_status(),
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
     if method and method != "POST":
         return _json_response(
-            400, {"success": False, "message": "Only POST is supported"}
+            400, {"success": False, "message": "Only GET and POST are supported"}
         )
 
     try:
@@ -805,19 +880,39 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if not collection_id:
             raise RuntimeError("REKOGNITION_COLLECTION_ID is not configured")
 
-        path = str(event.get("path") or "")
         action = str(payload.get("action") or "").lower()
-        if path.endswith("/queues/advance") or action == "advance_queue":
+        queue_action = str(payload.get("queueAction") or action or "call_next").strip().lower()
+
+        # Handle POST /queue/action, /queues/advance, and queue actions
+        if (
+            path.endswith("/queue/action")
+            or path.endswith("/queues/advance")
+            or action in ("advance_queue", "queue_action", "call_next", "complete", "recall", "reset")
+            or "queueAction" in payload
+        ):
             poli_name = str(payload.get("poliklinik") or "Poli Penyakit Dalam").strip()
-            queue_action = str(payload.get("queueAction") or "call_next").strip()
             updated_queue = advance_poli_queue(poli_name, queue_action=queue_action)
             return _json_response(
                 200,
                 {
                     "success": True,
                     "status": "QUEUE_ADVANCED",
+                    "action": queue_action,
                     "queue": updated_queue,
                     "queues": get_all_queues_status(),
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+        # Handle POST to /queue or /queues without action (returns status)
+        if path.endswith("/queue") or path.endswith("/queues"):
+            return _json_response(
+                200,
+                {
+                    "success": True,
+                    "count": len(POLIKLINIK_CONFIG),
+                    "queues": get_all_queues_status(),
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
                 },
             )
 
