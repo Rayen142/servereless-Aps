@@ -15,6 +15,12 @@ export interface FaceGeometryMetrics {
   readonly eyeMouthPitchRatio: number;
   /** Jarak antar-mata relatif terhadap lebar wajah. */
   readonly interocularRatio: number;
+  /**
+   * Proporsi bagian bawah kotak wajah di bawah ujung hidung terhadap tinggi kotak.
+   * Pada wajah tertutup masker, tepi bawah kotak BlazeFace cenderung "melompat"
+   * sehingga rasio ini berfluktuasi tidak wajar antar-frame.
+   */
+  readonly lowerFaceRatio: number;
   /** Titik pusat wajah ternormalisasi (0..1). */
   readonly centerNormX: number;
   readonly centerNormY: number;
@@ -42,9 +48,16 @@ export interface FrameSize {
   readonly height: number;
 }
 
-interface Point {
+/** Titik dalam koordinat piksel frame intrinsik. */
+export interface Point {
   readonly x: number;
   readonly y: number;
+}
+
+/** Konteks antar-frame opsional untuk validasi yang membutuhkan riwayat. */
+export interface FaceValidationContext {
+  /** Riwayat `lowerFaceRatio` dari frame-frame sebelumnya (deteksi masker). */
+  readonly lowerFaceHistory?: readonly number[];
 }
 
 interface Bounds {
@@ -61,6 +74,16 @@ interface DetectedFace {
 }
 
 const CONFIDENCE_THRESHOLD = 0.8;
+/**
+ * Rentang keyakinan "tertahan": wajah jelas terdeteksi (mata terlihat) tetapi
+ * fitur bawah (hidung–mulut) tertutup sehingga skor BlazeFace tidak mencapai ambang.
+ */
+const MASK_CONFIDENCE_MIN = 0.55;
+const MASK_CONFIDENCE_MAX = 0.78;
+/** Minimal sampel riwayat sebelum menilai stabilitas proporsi bawah wajah. */
+const LOWER_FACE_MIN_SAMPLES = 6;
+/** Simpangan baku `lowerFaceRatio` di atas nilai ini dianggap tidak stabil. */
+const LOWER_FACE_INSTABILITY_STD = 0.055;
 const MIN_FACE_AREA_RATIO = 0.2;
 const MAX_FACE_AREA_RATIO = 0.78;
 const EYE_ZONE_HEIGHT_RATIO = 0.55;
@@ -102,6 +125,11 @@ export const FACE_ASSESSMENT = {
   eyesHidden: {
     status: 'invalid_position',
     message: 'Pastikan kedua mata terlihat jelas',
+    trackingBox: null,
+  },
+  maskDetected: {
+    status: 'invalid_position',
+    message: 'Harap lepaskan masker/penutup wajah sejenak',
     trackingBox: null,
   },
   valid: {
@@ -202,6 +230,7 @@ const computeGeometryMetrics = (
   let noseYawRatio = 0.5;
   let eyeMouthPitchRatio = 0.35;
   let interocularRatio = 0.4;
+  const lowerFaceRatio = nose ? (bounds.bottom - nose.y) / faceH : 0.4;
 
   if (rightEye && leftEye) {
     const eyeDx = leftEye.x - rightEye.x;
@@ -226,6 +255,7 @@ const computeGeometryMetrics = (
     interocularRatio: Number.isFinite(interocularRatio)
       ? interocularRatio
       : 0.4,
+    lowerFaceRatio: Number.isFinite(lowerFaceRatio) ? lowerFaceRatio : 0.4,
     centerNormX: (bounds.left + faceW / 2) / Math.max(1, frame.width),
     centerNormY: (bounds.top + faceH / 2) / Math.max(1, frame.height),
   };
@@ -256,9 +286,36 @@ const buildTrackingBox = (
   };
 };
 
+const mean = (values: readonly number[]): number =>
+  values.length === 0
+    ? 0
+    : values.reduce((acc, v) => acc + v, 0) / values.length;
+
+const variance = (values: readonly number[]): number => {
+  if (values.length < 2) return 0;
+  const m = mean(values);
+  return values.reduce((acc, v) => acc + (v - m) * (v - m), 0) / values.length;
+};
+
+/** Proporsi bagian bawah kotak dianggap tidak stabil bila simpangan bakunya melampaui ambang. */
+const isLowerFaceUnstable = (history: readonly number[]): boolean => {
+  const samples = history.filter(Number.isFinite);
+  return (
+    samples.length >= LOWER_FACE_MIN_SAMPLES &&
+    Math.sqrt(variance(samples)) > LOWER_FACE_INSTABILITY_STD
+  );
+};
+
+interface PositionOptions {
+  /** Keyakinan deteksi berada di rentang tertahan (indikasi wajah tertutup). */
+  readonly suspectOcclusion: boolean;
+  readonly lowerFaceHistory: readonly number[];
+}
+
 const validateFacePosition = (
   detected: DetectedFace,
   frame: FrameSize,
+  { suspectOcclusion, lowerFaceHistory }: PositionOptions,
 ): FaceAssessment => {
   if (!isUsableFrame(frame)) {
     return FACE_ASSESSMENT.calibrating;
@@ -313,26 +370,302 @@ const validateFacePosition = (
   const eyesAreVisible =
     eyes.length === 2 && eyes.every((eye) => containsPoint(guide.eyeZone, eye));
 
-  return eyesAreVisible
-    ? { ...FACE_ASSESSMENT.valid, trackingBox }
-    : { ...FACE_ASSESSMENT.eyesHidden, trackingBox };
+  if (!eyesAreVisible) {
+    return { ...FACE_ASSESSMENT.eyesHidden, trackingBox };
+  }
+
+  // Mata berada di zona valid (55% atas kotak panduan), namun keyakinan tertahan
+  // atau proporsi bagian bawah kotak goyah: indikasi kuat masker / penutup wajah.
+  if (
+    suspectOcclusion ||
+    isLowerFaceUnstable([
+      ...lowerFaceHistory,
+      trackingBox.geometry.lowerFaceRatio,
+    ])
+  ) {
+    return { ...FACE_ASSESSMENT.maskDetected, trackingBox };
+  }
+
+  return { ...FACE_ASSESSMENT.valid, trackingBox };
 };
 
 /**
  * Menilai wajah pertama yang lolos ambang keyakinan terhadap kotak panduan.
+ * Bila tidak ada, wajah dengan keyakinan tertahan (0.55–0.78) dinilai sebagai
+ * kandidat wajah tertutup masker agar pengguna menerima panduan yang tepat.
  * Fungsi murni: tidak menyentuh DOM, ref, maupun state React.
  */
 export const validateFaces = (
   faces: readonly NormalizedFace[],
   frame: FrameSize,
+  context: FaceValidationContext = {},
 ): FaceAssessment => {
-  for (const candidate of faces) {
-    const face = readFace(candidate);
+  const lowerFaceHistory = context.lowerFaceHistory ?? [];
+  const detected = faces.map((candidate) => readFace(candidate));
 
-    if (face.confidence >= CONFIDENCE_THRESHOLD) {
-      return validateFacePosition(face, frame);
-    }
+  const confident = detected.find(
+    (face) => face.confidence >= CONFIDENCE_THRESHOLD,
+  );
+  if (confident) {
+    return validateFacePosition(confident, frame, {
+      suspectOcclusion: false,
+      lowerFaceHistory,
+    });
+  }
+
+  const occluded = detected.find(
+    (face) =>
+      face.confidence >= MASK_CONFIDENCE_MIN &&
+      face.confidence <= MASK_CONFIDENCE_MAX,
+  );
+  if (occluded) {
+    return validateFacePosition(occluded, frame, {
+      suspectOcclusion: true,
+      lowerFaceHistory,
+    });
   }
 
   return FACE_ASSESSMENT.noFace;
+};
+
+/* -------------------------------------------------------------------------- */
+/*  Heuristic Anti-Spoofing: Micro-Movement Variance (Geometri Spasial 2D)    */
+/* -------------------------------------------------------------------------- */
+
+/** Sampel landmark mata & hidung (piksel frame intrinsik) pada satu frame. */
+export interface LandmarkSample {
+  readonly t: number;
+  readonly rightEye: Point;
+  readonly leftEye: Point;
+  readonly nose: Point;
+}
+
+export type MicroMovementVerdict =
+  | 'insufficient'
+  | 'static'
+  | 'rigid_uniform'
+  | 'natural';
+
+export interface MicroMovementAnalysis {
+  readonly verdict: MicroMovementVerdict;
+  readonly sampleCount: number;
+  /** RMS perpindahan titik tengah mata antar-frame (satuan jarak antar-mata). */
+  readonly motionRms: number;
+  /** Sebaran posisi global wajah sepanjang jendela (satuan jarak antar-mata). */
+  readonly motionSpread: number;
+  /** Sebaran (terhaluskan) posisi hidung dalam kerangka mata: paralaks non-planar. */
+  readonly parallaxStd: number;
+  /** Autokorelasi lag-1 deret paralaks: gerak alami halus, derau detektor acak. */
+  readonly parallaxCoherence: number;
+  /** 1 = ketiga landmark bergerak seragam (lockstep), 0 = sepenuhnya independen. */
+  readonly uniformity: number;
+  /** Pesan panduan bila verdict bukan `natural`. */
+  readonly message: string | null;
+}
+
+/** Minimal sampel (~10 fps × 1,5 dtk = 15; 6 untuk perangkat lambat). */
+const MICRO_MIN_SAMPLES = 6;
+/** Di bawah ini wajah praktis tidak bergerak sama sekali (statis/beku). */
+const MICRO_STATIC_MOTION_RMS = 0.004;
+/** Ambang minimum paralaks terhaluskan yang menandakan fluktuasi 3D alami. */
+const MICRO_PARALLAX_MIN = 0.006;
+/** Fluktuasi alami bersifat halus (berkorelasi); derau detektor ~0. */
+const MICRO_COHERENCE_MIN = 0.3;
+/** Sebaran gerak global yang dianggap "benda sedang digerakkan". */
+const MICRO_RIGID_SPREAD_MIN = 0.03;
+/** Rasio paralaks/gerak global di bawah ini = benda datar kaku. */
+const MICRO_RIGID_PARALLAX_RATIO = 0.08;
+const MICRO_RIGID_UNIFORMITY_MIN = 0.9;
+
+export const MICRO_MOVEMENT_GUIDANCE: Record<
+  Exclude<MicroMovementVerdict, 'natural'>,
+  string
+> = {
+  insufficient: 'Tahan posisi sebentar…',
+  static:
+    'Wajah terdeteksi statis — kedipkan mata atau gerakkan kepala perlahan',
+  rigid_uniform:
+    'Pola gerak seragam terdeteksi (indikasi foto 2D) — tatap kamera secara natural',
+};
+
+const lag1Autocorrelation = (values: readonly number[]): number => {
+  if (values.length < 3) return 0;
+  const m = mean(values);
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < values.length; i++) {
+    const d = values[i]! - m;
+    den += d * d;
+    if (i > 0) num += d * (values[i - 1]! - m);
+  }
+  return den > 1e-12 ? num / den : 0;
+};
+
+/** Rata-rata bergerak 3 titik: meredam derau detektor frekuensi tinggi. */
+const movingAverage3 = (values: readonly number[]): number[] =>
+  values.map((_, i) => {
+    const lo = Math.max(0, i - 1);
+    const hi = Math.min(values.length - 1, i + 1);
+    let sum = 0;
+    for (let k = lo; k <= hi; k++) sum += values[k]!;
+    return sum / (hi - lo + 1);
+  });
+
+/**
+ * Mengubah tracking box (persentase) menjadi sampel landmark piksel.
+ * Mengembalikan `null` bila mata/hidung tidak lengkap.
+ */
+export const createLandmarkSample = (
+  box: FaceTrackingBox,
+  frame: FrameSize,
+  t: number,
+): LandmarkSample | null => {
+  const [rightEye, leftEye, nose] = box.landmarks;
+  if (!rightEye || !leftEye || !nose || !isUsableFrame(frame)) {
+    return null;
+  }
+  const toPx = (p: NormalizedPoint): Point => ({
+    x: (p.xPct / 100) * frame.width,
+    y: (p.yPct / 100) * frame.height,
+  });
+  return { t, rightEye: toPx(rightEye), leftEye: toPx(leftEye), nose: toPx(nose) };
+};
+
+/**
+ * Analisis variansi micro-movement antar-frame (fungsi murni).
+ *
+ * Prinsip geometri spasial pada kamera 2D: ujung hidung manusia menonjol
+ * keluar dari bidang mata, sehingga rotasi kepala sekecil apa pun (goyangan
+ * postural, napas, tremor) menggeser posisi hidung relatif terhadap kerangka
+ * mata (paralaks). Pada foto/layar datar, posisi tersebut invarian terhadap
+ * translasi, rotasi bidang, dan skala — objek bergerak "seragam" tanpa paralaks.
+ *
+ * - `static`: hampir tidak ada gerak global maupun paralaks (foto di dudukan).
+ * - `rigid_uniform`: ada gerak global, tetapi landmark bergerak lockstep tanpa
+ *   paralaks yang koheren (foto/layar yang digerakkan tangan).
+ * - `natural`: terdapat fluktuasi paralaks halus & berkorelasi khas wajah hidup.
+ */
+export const analyzeMicroMovement = (
+  samples: readonly LandmarkSample[],
+): MicroMovementAnalysis => {
+  const frames = samples
+    .map((s) => {
+      const ax = s.leftEye.x - s.rightEye.x;
+      const ay = s.leftEye.y - s.rightEye.y;
+      const iod = Math.hypot(ax, ay);
+      const midX = (s.leftEye.x + s.rightEye.x) / 2;
+      const midY = (s.leftEye.y + s.rightEye.y) / 2;
+      const ex = ax / iod;
+      const ey = ay / iod;
+      const nx = s.nose.x - midX;
+      const ny = s.nose.y - midY;
+      return {
+        sample: s,
+        iod,
+        midX,
+        midY,
+        // Koordinat hidung dalam kerangka mata, dinormalisasi jarak antar-mata.
+        u: (nx * ex + ny * ey) / iod,
+        v: (-nx * ey + ny * ex) / iod,
+      };
+    })
+    .filter(
+      (f) =>
+        f.iod > 4 &&
+        [f.u, f.v, f.midX, f.midY].every(Number.isFinite),
+    );
+
+  const empty: MicroMovementAnalysis = {
+    verdict: 'insufficient',
+    sampleCount: frames.length,
+    motionRms: 0,
+    motionSpread: 0,
+    parallaxStd: 0,
+    parallaxCoherence: 0,
+    uniformity: 0,
+    message: MICRO_MOVEMENT_GUIDANCE.insufficient,
+  };
+  if (frames.length < MICRO_MIN_SAMPLES) {
+    return empty;
+  }
+
+  const iodMean = mean(frames.map((f) => f.iod));
+
+  // Gerak global & keseragaman perpindahan ketiga landmark antar-frame.
+  let midStepSq = 0;
+  let totalEnergy = 0;
+  let residualEnergy = 0;
+  for (let i = 1; i < frames.length; i++) {
+    const prev = frames[i - 1]!.sample;
+    const curr = frames[i]!.sample;
+    const deltas = (['rightEye', 'leftEye', 'nose'] as const).map((key) => ({
+      x: (curr[key].x - prev[key].x) / iodMean,
+      y: (curr[key].y - prev[key].y) / iodMean,
+    }));
+    const mx = mean(deltas.map((d) => d.x));
+    const my = mean(deltas.map((d) => d.y));
+    for (const d of deltas) {
+      totalEnergy += d.x * d.x + d.y * d.y;
+      residualEnergy += (d.x - mx) ** 2 + (d.y - my) ** 2;
+    }
+    const dMidX = (frames[i]!.midX - frames[i - 1]!.midX) / iodMean;
+    const dMidY = (frames[i]!.midY - frames[i - 1]!.midY) / iodMean;
+    midStepSq += dMidX * dMidX + dMidY * dMidY;
+  }
+
+  const steps = frames.length - 1;
+  const motionRms = Math.sqrt(midStepSq / steps);
+  const motionSpread = Math.sqrt(
+    variance(frames.map((f) => f.midX / iodMean)) +
+      variance(frames.map((f) => f.midY / iodMean)),
+  );
+  const uniformity =
+    totalEnergy > 1e-12 ? Math.max(0, 1 - residualEnergy / totalEnergy) : 1;
+
+  const uSeries = frames.map((f) => f.u);
+  const vSeries = frames.map((f) => f.v);
+  const parallaxStd = Math.sqrt(
+    variance(movingAverage3(uSeries)) + variance(movingAverage3(vSeries)),
+  );
+  const parallaxCoherence = Math.max(
+    lag1Autocorrelation(uSeries),
+    lag1Autocorrelation(vSeries),
+  );
+
+  const metrics = {
+    sampleCount: frames.length,
+    motionRms,
+    motionSpread,
+    parallaxStd,
+    parallaxCoherence,
+    uniformity,
+  };
+
+  const hasNaturalParallax =
+    parallaxStd >= MICRO_PARALLAX_MIN &&
+    parallaxCoherence >= MICRO_COHERENCE_MIN;
+  const isBeingMoved = motionSpread >= MICRO_RIGID_SPREAD_MIN;
+
+  let verdict: MicroMovementVerdict;
+  if (motionRms < MICRO_STATIC_MOTION_RMS && parallaxStd < MICRO_PARALLAX_MIN) {
+    verdict = 'static';
+  } else if (
+    isBeingMoved &&
+    (!hasNaturalParallax ||
+      (uniformity >= MICRO_RIGID_UNIFORMITY_MIN &&
+        parallaxStd / motionSpread < MICRO_RIGID_PARALLAX_RATIO))
+  ) {
+    verdict = 'rigid_uniform';
+  } else if (hasNaturalParallax) {
+    verdict = 'natural';
+  } else {
+    // Ada sedikit gerak, tetapi tanpa fluktuasi paralaks alami.
+    verdict = 'static';
+  }
+
+  return {
+    ...metrics,
+    verdict,
+    message: verdict === 'natural' ? null : MICRO_MOVEMENT_GUIDANCE[verdict],
+  };
 };

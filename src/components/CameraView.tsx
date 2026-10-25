@@ -92,7 +92,7 @@ function CameraView({
                 ? `Liveness Live · ${detection.livenessScore.toFixed(0)}%`
                 : liveness === 'spoof_warning'
                   ? 'Anti-Spoofing: Gerakkan Wajah'
-                  : 'Cek Liveness 3D…'}
+                  : 'Cek Liveness Biometrik…'}
             </span>
           </div>
         )}

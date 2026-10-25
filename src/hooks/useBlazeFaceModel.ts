@@ -27,7 +27,9 @@ const loadBlazeFaceModel = async (): Promise<BlazeFaceModel> => {
   await tf.setBackend('webgl');
   await tf.ready();
 
-  return blazeface.load({ maxFaces: 1 });
+  // Ambang internal diturunkan ke 0.5 agar wajah ber-keyakinan tertahan (0.55–0.78,
+  // indikasi masker) tetap diteruskan; gerbang validasi ketat 0.8 ada di faceValidation.ts.
+  return blazeface.load({ maxFaces: 1, scoreThreshold: 0.5 });
 };
 
 /**

@@ -5,12 +5,17 @@ import {
   type RefObject,
 } from 'react';
 import {
+  analyzeMicroMovement,
+  createLandmarkSample,
   FACE_ASSESSMENT,
+  MICRO_MOVEMENT_GUIDANCE,
   validateFaces,
   type FaceAssessment,
   type FaceStatus,
   type FaceTrackingBox,
+  type LandmarkSample,
   type LivenessStatus,
+  type MicroMovementVerdict,
 } from '../lib/faceValidation';
 import { isVideoFrameReady } from '../lib/video';
 import { useBlazeFaceModel, type ModelStatus } from './useBlazeFaceModel';
@@ -43,6 +48,11 @@ export interface FaceDetectionResult {
 const DETECTION_INTERVAL_MS = 100;
 const AUTO_CAPTURE_HOLD_MS = 1500;
 const PATCH_SIZE = 32;
+/** Jendela geser sampel landmark micro-movement (±2 dtk pada ~10 fps). */
+const MICRO_SAMPLE_WINDOW_MS = 2000;
+const MICRO_SAMPLE_MAX = 30;
+/** Riwayat proporsi bawah wajah untuk indikator masker. */
+const LOWER_FACE_HISTORY_MAX = 10;
 
 interface AnalysisState {
   readonly faceStatus: FaceStatus;
@@ -62,6 +72,8 @@ type AnalysisAction =
       readonly holdProgress: number;
       readonly livenessStatus: LivenessStatus;
       readonly livenessScore: number;
+      /** Pesan panduan prioritas (mis. hasil analisis micro-movement). */
+      readonly guidanceOverride?: string;
     }
   | { readonly type: 'scan_failed' };
 
@@ -112,9 +124,10 @@ const analysisReducer = (
         assessment.status === 'valid' ? action.holdProgress : 0;
 
       const guidance =
-        assessment.status === 'valid' && livenessStatus === 'spoof_warning'
+        action.guidanceOverride ??
+        (assessment.status === 'valid' && livenessStatus === 'spoof_warning'
           ? 'Gerakkan kepala sedikit untuk verifikasi keaslian wajah'
-          : assessment.message;
+          : assessment.message);
 
       if (
         state.faceStatus === assessment.status &&
@@ -333,6 +346,22 @@ export function useFaceDetection({
     let lastAnalysisAt = Number.NEGATIVE_INFINITY;
     const holdTimer = createHoldTimer(AUTO_CAPTURE_HOLD_MS);
     const livenessAnalyzer = createLivenessAnalyzer();
+    /** Sampel landmark mata & hidung, hanya direkam selama timer tahan berjalan. */
+    const landmarkSamples: LandmarkSample[] = [];
+    const lowerFaceHistory: number[] = [];
+    /** Verdict micro-movement terakhir yang gagal; dipertahankan sebagai panduan. */
+    let lastMicroFailure: Exclude<
+      MicroMovementVerdict,
+      'natural' | 'insufficient'
+    > | null = null;
+
+    const resetTracking = (): void => {
+      holdTimer.reset();
+      livenessAnalyzer.reset();
+      landmarkSamples.length = 0;
+      lowerFaceHistory.length = 0;
+      lastMicroFailure = null;
+    };
 
     const stop = (): void => {
       isActive = false;
@@ -346,8 +375,7 @@ export function useFaceDetection({
     const analyzeFrame = async (): Promise<void> => {
       const video = videoRef.current;
       if (!isVideoFrameReady(video)) {
-        holdTimer.reset();
-        livenessAnalyzer.reset();
+        resetTracking();
         return;
       }
 
@@ -358,15 +386,25 @@ export function useFaceDetection({
         return;
       }
       if (!isVideoFrameReady(currentVideo)) {
-        holdTimer.reset();
-        livenessAnalyzer.reset();
+        resetTracking();
         return;
       }
 
-      const assessment = validateFaces(faces, {
+      const frameSize = {
         width: currentVideo.videoWidth,
         height: currentVideo.videoHeight,
-      });
+      };
+      const assessment = validateFaces(faces, frameSize, { lowerFaceHistory });
+
+      if (assessment.trackingBox) {
+        lowerFaceHistory.push(assessment.trackingBox.geometry.lowerFaceRatio);
+        if (lowerFaceHistory.length > LOWER_FACE_HISTORY_MAX) {
+          lowerFaceHistory.shift();
+        }
+      } else {
+        lowerFaceHistory.length = 0;
+        lastMicroFailure = null;
+      }
 
       const liveness = livenessAnalyzer.evaluate(
         currentVideo,
@@ -376,18 +414,63 @@ export function useFaceDetection({
       const isReadyForHold =
         assessment.status === 'valid' && liveness.status !== 'spoof_warning';
 
-      const holdProgress = holdTimer.update(isReadyForHold, performance.now());
+      const now = performance.now();
+      let holdProgress = holdTimer.update(isReadyForHold, now);
+
+      // Rekam koordinat landmark antar-frame hanya selama timer tahan berjalan.
+      const sample =
+        isReadyForHold && assessment.trackingBox
+          ? createLandmarkSample(assessment.trackingBox, frameSize, now)
+          : null;
+      if (sample) {
+        landmarkSamples.push(sample);
+        while (
+          landmarkSamples.length > MICRO_SAMPLE_MAX ||
+          (landmarkSamples[0] !== undefined &&
+            now - landmarkSamples[0].t > MICRO_SAMPLE_WINDOW_MS)
+        ) {
+          landmarkSamples.shift();
+        }
+      } else {
+        landmarkSamples.length = 0;
+      }
+
+      let shouldCapture = false;
+      if (holdProgress >= 1) {
+        const micro = analyzeMicroMovement(landmarkSamples);
+
+        if (micro.verdict === 'natural') {
+          lastMicroFailure = null;
+          shouldCapture = liveness.status === 'verified';
+        } else if (micro.verdict !== 'insufficient') {
+          // Objek statis / digerakkan seragam: ulangi jendela tahan 1,5 dtk baru.
+          lastMicroFailure = micro.verdict;
+          holdTimer.reset();
+          landmarkSamples.length = 0;
+          holdProgress = 0;
+        }
+        // 'insufficient' (perangkat lambat): tetap kumpulkan sampel tambahan.
+      }
+
+      const microBlocked = isReadyForHold && lastMicroFailure !== null;
 
       dispatch({
         type: 'frame_assessed',
         assessment,
         holdProgress,
-        livenessStatus: liveness.status,
-        livenessScore: liveness.score,
+        livenessStatus: microBlocked ? 'spoof_warning' : liveness.status,
+        livenessScore: microBlocked
+          ? Math.min(liveness.score, 52)
+          : liveness.score,
+        guidanceOverride:
+          microBlocked && lastMicroFailure
+            ? MICRO_MOVEMENT_GUIDANCE[lastMicroFailure]
+            : undefined,
       });
 
-      if (holdProgress >= 1 && liveness.status === 'verified') {
+      if (shouldCapture) {
         holdTimer.reset();
+        landmarkSamples.length = 0;
         notifyHoldComplete();
       }
     };

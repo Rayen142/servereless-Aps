@@ -699,11 +699,28 @@ function WaitingRoomTvDisplay({
 /*  Empty State Minimalis                                                     */
 /* -------------------------------------------------------------------------- */
 
+/** Format No. RM / ID pasien: RM-2026-501B, RM-2026-0801, MHS-2026-001. */
+const MANUAL_RM_PATTERN = /^[A-Z]{2,4}-\d{4}-[0-9A-Z]{3,6}$/;
+
+const normalizeRmInput = (value: string): string =>
+  value.trim().toUpperCase().replace(/\s+/g, '').replace(/_/g, '-');
+
 function EmptyState({
   activePoliQueue,
+  onManualRmSubmit,
+  isSubmitting,
+  lookupError,
 }: {
   readonly activePoliQueue: PoliQueueSnapshot;
+  readonly onManualRmSubmit: (noRm: string) => Promise<boolean>;
+  readonly isSubmitting: boolean;
+  readonly lookupError: string | null;
 }) {
+  const [showRmFallback, setShowRmFallback] = useState(false);
+  const [rmInput, setRmInput] = useState('');
+  const [rmFormatError, setRmFormatError] = useState<string | null>(null);
+  const [hasSubmitted, setHasSubmitted] = useState(false);
+
   const nextNumber = `${activePoliQueue.prefix}-${String(
     activePoliQueue.latestQueueSequence + 1,
   ).padStart(3, '0')}`;
@@ -711,6 +728,33 @@ function EmptyState({
     0,
     activePoliQueue.latestQueueSequence + 1 - activePoliQueue.currentServingSequence,
   );
+
+  const normalizedRm = normalizeRmInput(rmInput);
+  const inlineError =
+    rmFormatError ?? (hasSubmitted && !isSubmitting ? lookupError : null);
+
+  const closeFallback = () => {
+    setShowRmFallback(false);
+    setRmInput('');
+    setRmFormatError(null);
+    setHasSubmitted(false);
+  };
+
+  const handleRmSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!MANUAL_RM_PATTERN.test(normalizedRm)) {
+      setRmFormatError(
+        'Format No. RM tidak valid. Contoh: RM-2026-501B atau MHS-2026-001.',
+      );
+      return;
+    }
+    setRmFormatError(null);
+    setHasSubmitted(true);
+    const ok = await onManualRmSubmit(normalizedRm);
+    if (ok) {
+      closeFallback();
+    }
+  };
 
   return (
     <div className="flex h-full min-h-[22rem] flex-col justify-between rounded-2xl border border-neutral-200/80 bg-white p-6">
@@ -722,18 +766,119 @@ function EmptyState({
           Menunggu Pemindaian Wajah Pasien
         </p>
         <p className="mt-1 max-w-xs text-xs leading-relaxed text-neutral-500">
-          Hadapkan wajah ke kamera dan tahan 1,5 detik. Sistem memvalidasi Liveness 3D dan menerbitkan tiket antrean otomatis.
+          Hadapkan wajah ke kamera dan tahan 1,5 detik. Sistem memvalidasi Liveness Biometrik &amp; Geometri Spasial dan menerbitkan tiket antrean otomatis.
         </p>
       </div>
 
-      <div className="rounded-xl bg-neutral-50 p-3.5 text-xs">
-        <div className="flex items-center justify-between">
-          <span className="text-neutral-500">
-            Tiket berikutnya ({activePoliQueue.poliklinik})
-          </span>
-          <span className="font-mono font-semibold text-neutral-900">
-            {nextNumber} · Menunggu {waitingForNext} pasien (±{waitingForNext * 8} mnt)
-          </span>
+      <div className="space-y-3">
+        <div className="rounded-xl bg-neutral-50 p-3.5 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-neutral-500">
+              Tiket berikutnya ({activePoliQueue.poliklinik})
+            </span>
+            <span className="font-mono font-semibold text-neutral-900">
+              {nextNumber} · Menunggu {waitingForNext} pasien (±{waitingForNext * 8} mnt)
+            </span>
+          </div>
+        </div>
+
+        {/* Fallback Rekam Medis Manual (pasien tidak memungkinkan dipindai biometrik) */}
+        <div className="border-t border-neutral-100 pt-3">
+          {!showRmFallback ? (
+            <p className="text-center text-xs text-neutral-500">
+              Kendala pemindaian?{' '}
+              <button
+                id="manual-rm-toggle"
+                type="button"
+                onClick={() => setShowRmFallback(true)}
+                className="font-medium text-neutral-900 underline decoration-neutral-300 underline-offset-4 transition hover:decoration-neutral-900"
+              >
+                Input No. RM Manual
+              </button>
+            </p>
+          ) : (
+            <form
+              onSubmit={(e) => void handleRmSubmit(e)}
+              noValidate
+              className="space-y-2"
+              aria-label="Input Nomor Rekam Medis Manual"
+            >
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="manual-rm-input"
+                  className="flex items-center gap-1.5 text-xs font-medium text-neutral-800"
+                >
+                  <FileTextIcon width={13} height={13} className="text-neutral-500" />
+                  Nomor Rekam Medis
+                </label>
+                <button
+                  type="button"
+                  onClick={closeFallback}
+                  className="text-[11px] text-neutral-400 transition hover:text-neutral-700"
+                >
+                  Batal
+                </button>
+              </div>
+
+              <div
+                className={`flex items-center gap-2 rounded-xl border bg-neutral-50 p-1.5 pl-3 transition focus-within:bg-white ${
+                  inlineError
+                    ? 'border-rose-300 focus-within:border-rose-400'
+                    : 'border-neutral-200 focus-within:border-neutral-900'
+                }`}
+              >
+                <input
+                  id="manual-rm-input"
+                  value={rmInput}
+                  onChange={(e) => {
+                    setRmInput(e.target.value);
+                    setRmFormatError(null);
+                    setHasSubmitted(false);
+                  }}
+                  placeholder="RM-2026-501B"
+                  autoFocus
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  enterKeyHint="go"
+                  maxLength={20}
+                  aria-invalid={inlineError !== null}
+                  aria-describedby="manual-rm-hint"
+                  className="h-8 min-w-0 flex-1 bg-transparent font-mono text-[16px] uppercase tracking-wide text-neutral-900 outline-none placeholder:normal-case placeholder:text-neutral-400 sm:text-sm"
+                />
+                <button
+                  id="manual-rm-submit"
+                  type="submit"
+                  disabled={isSubmitting || normalizedRm.length === 0}
+                  className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <span className="h-3 w-3 animate-spin rounded-full border border-white/40 border-t-white" />
+                      Membuka…
+                    </>
+                  ) : (
+                    <>
+                      Buka RM &amp; Terbitkan Tiket
+                      <ChevronRightIcon width={12} height={12} />
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <p
+                id="manual-rm-hint"
+                role={inlineError ? 'alert' : undefined}
+                className={`text-[11px] leading-relaxed ${
+                  inlineError ? 'text-rose-600' : 'text-neutral-400'
+                }`}
+              >
+                {inlineError ??
+                  'Contoh: RM-2026-501B atau MHS-2026-001. Gunakan bila pasien tidak memungkinkan dipindai biometrik.'}
+              </p>
+            </form>
+          )}
         </div>
       </div>
     </div>
@@ -1420,6 +1565,18 @@ function AttendanceCamera({
     }
   };
 
+  /** Fallback No. RM manual dari kartu kanan (pasien tidak dapat dipindai). */
+  const handleManualRmLookup = async (noRm: string): Promise<boolean> => {
+    const ok = await verification.lookupManual(
+      noRm,
+      poli === AUTO_POLI ? undefined : poli,
+    );
+    if (ok) {
+      await refreshQueues();
+    }
+    return ok;
+  };
+
   const detection = useFaceDetection({
     videoRef: camera.videoRef,
     enabled:
@@ -1775,7 +1932,12 @@ function AttendanceCamera({
                   />
                 </>
               ) : (
-                <EmptyState activePoliQueue={activePoliQueue} />
+                <EmptyState
+                  activePoliQueue={activePoliQueue}
+                  onManualRmSubmit={handleManualRmLookup}
+                  isSubmitting={verification.isSubmitting}
+                  lookupError={error}
+                />
               )}
             </section>
           </div>
