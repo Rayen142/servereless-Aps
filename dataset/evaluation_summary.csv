@@ -1,0 +1,34 @@
+﻿section,metric,value,unit,notes
+dataset,mode,simulate-local,,
+dataset,total_cases,25,sampel,
+dataset,positive_cases,20,sampel,test_positive/
+dataset,negative_cases,5,sampel,test_negative/
+dataset,threshold,80.0,%,MATCH_THRESHOLD
+confusion_matrix,TP,20,sampel,
+confusion_matrix,TN,5,sampel,
+confusion_matrix,FP,0,sampel,
+confusion_matrix,FN,0,sampel,
+metrics,accuracy,100.0,%,(TP+TN)/N
+metrics,precision,100.0,%,TP/(TP+FP)
+metrics,recall,100.0,%,TP/(TP+FN)
+metrics,f1_score,100.0,%,2PR/(P+R)
+metrics,far,0.0,%,FP/(FP+TN)
+metrics,frr,0.0,%,FN/(FN+TP)
+metrics,eer_threshold,75,%,|FAR-FRR| minimum
+latency,totalAvgMs,40.6,ms,
+latency,totalP50Ms,36.3,ms,
+latency,totalP95Ms,40.36,ms,
+latency,networkAvgMs,,ms,
+latency,networkMeasured,False,,
+latency,cloudAvgMs,40.6,ms,
+latency,rekognitionAvgMs,32.21,ms,
+latency,coldStartMs,153.29,ms,
+latency,warmAvgMs,35.91,ms,
+latency,coldInitMs,100.45,ms,
+latency,coldSamples,1,sampel,
+latency,warmSamples,24,sampel,
+latency,startDetection,local_import_timing,,
+payload,avg_payload,50.9,KB,JSON base64
+notes,catatan,,,Mode simulasi lokal: Rekognition & DynamoDB di-mock; latensi cloud bukan latensi AWS sebenarnya.
+notes,catatan,,,Network & payload transit tidak diukur pada mode lokal (tidak ada jaringan).
+notes,catatan,,,Hanya 5 sampel negatif: resolusi FAR = 20.0% per sampel.

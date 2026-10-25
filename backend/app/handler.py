@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -142,6 +143,62 @@ _patient_active_tickets: dict[str, dict[str, Any]] = {}
 _custom_medical_records: dict[str, list[dict[str, str]]] = {}
 MINUTES_PER_PATIENT = 8
 
+# Server lokal memakai ThreadingHTTPServer: polling GET /api/queue dari banyak
+# klien, aksi petugas, dan verifikasi wajah dapat berjalan bersamaan. Seluruh
+# baca/tulis state antrean wajib melalui kunci ini agar nomor tidak dobel/lompat.
+_QUEUE_LOCK = threading.RLock()
+
+# Aksi panel petugas -> aksi internal mesin antrean.
+# NEXT = "Panggil Berikutnya", FINISH = "Selesai".
+QUEUE_ACTION_ALIASES: dict[str, str] = {
+    "next": "call_next",
+    "call_next": "call_next",
+    "advance": "call_next",
+    "advance_queue": "call_next",
+    "queue_action": "call_next",
+    "finish": "complete",
+    "complete": "complete",
+    "done": "complete",
+    "recall": "recall",
+    "reset": "reset",
+}
+
+
+def normalize_queue_action(raw_action: Any) -> str:
+    """Ubah aksi dari klien (NEXT/FINISH/RECALL/RESET atau nama lama) ke aksi internal."""
+    text = str(raw_action or "").strip().lower()
+    if not text:
+        return "call_next"
+    normalized = QUEUE_ACTION_ALIASES.get(text)
+    if normalized is None:
+        raise ValueError(
+            f"Aksi antrean '{raw_action}' tidak dikenal. "
+            "Gunakan NEXT, FINISH, RECALL, atau RESET."
+        )
+    return normalized
+
+
+def resolve_poli_name(
+    poliklinik: Any = None, prefix: Any = None
+) -> str | None:
+    """Cari nama poli resmi dari nama (case-insensitive) atau prefix nomor antrean."""
+    name = str(poliklinik or "").strip()
+    if name:
+        if name in POLIKLINIK_CONFIG:
+            return name
+        lowered = name.lower()
+        for poli in POLIKLINIK_CONFIG:
+            if poli.lower() == lowered:
+                return poli
+        return None
+    code = str(prefix or "").strip().upper()
+    if code:
+        return next(
+            (k for k, v in POLIKLINIK_CONFIG.items() if v["prefix"] == code),
+            None,
+        )
+    return None
+
 
 def _save_queue_state_to_dynamodb(prefix: str | None = None) -> None:
     try:
@@ -270,6 +327,11 @@ def _get_patient_for_queue(prefix: str, seq: int) -> dict[str, str]:
 
 
 def get_poli_queue_snapshot(poli_name: str) -> dict[str, Any]:
+    with _QUEUE_LOCK:
+        return _get_poli_queue_snapshot_unlocked(poli_name)
+
+
+def _get_poli_queue_snapshot_unlocked(poli_name: str) -> dict[str, Any]:
     poli_info = POLIKLINIK_CONFIG.get(
         poli_name,
         {
@@ -311,31 +373,50 @@ def get_poli_queue_snapshot(poli_name: str) -> dict[str, Any]:
 
 
 def get_all_queues_status() -> list[dict[str, Any]]:
-    return [get_poli_queue_snapshot(poli) for poli in POLIKLINIK_CONFIG]
+    with _QUEUE_LOCK:
+        return [_get_poli_queue_snapshot_unlocked(poli) for poli in POLIKLINIK_CONFIG]
 
 
-def advance_poli_queue(
-    poli_name: str, queue_action: str = "call_next"
-) -> dict[str, Any]:
-    poli_info = POLIKLINIK_CONFIG.get(
-        poli_name, POLIKLINIK_CONFIG["Poli Penyakit Dalam"]
-    )
-    prefix = poli_info["prefix"]
+def _release_active_ticket(prefix: str, seq: int) -> None:
+    """Hapus seluruh kunci indeks (No. RM, personId, hash foto) milik tiket prefix-seq."""
+    queue_number = f"{prefix}-{seq:03d}"
+    stale_keys = [
+        k
+        for k, t in _patient_active_tickets.items()
+        if isinstance(t, dict) and str(t.get("queueNumber") or "") == queue_number
+    ]
+    for k in stale_keys:
+        _patient_active_tickets.pop(k, None)
+    finished_patient = _queue_patients.get(prefix, {}).get(seq)
+    if finished_patient:
+        rm_key = str(finished_patient.get("noRm") or "").strip().upper()
+        if rm_key:
+            _patient_active_tickets.pop(rm_key, None)
+
+
+def _apply_queue_action(prefix: str, normalized_action: str) -> tuple[bool, str]:
+    """Jalankan satu transisi state antrean. Wajib dipanggil di dalam _QUEUE_LOCK.
+
+    Mengembalikan (changed, message) agar panel petugas tahu apakah state berubah.
+    """
     issued_seq = _queue_counter.get(prefix, 3)
     serving_seq = _serving_counter.get(prefix, 1)
+    current_status = _serving_status.get(prefix, "DIPANGGIL")
+    current_number = f"{prefix}-{serving_seq:03d}"
 
-    normalized_action = queue_action.strip().lower()
     if normalized_action == "complete":
+        if current_status == "SELESAI":
+            return False, f"Nomor {current_number} sudah berstatus selesai."
         _serving_status[prefix] = "SELESAI"
-        # Jika pasien yang sedang dilayani sudah selesai, hapus kunci antrean aktifnya
-        finished_patient = _queue_patients.get(prefix, {}).get(serving_seq)
-        if finished_patient:
-            rm_key = str(finished_patient.get("noRm") or "").strip().upper()
-            if rm_key:
-                _patient_active_tickets.pop(rm_key, None)
-    elif normalized_action == "recall":
+        # Pasien yang sedang dilayani selesai: lepaskan kunci antrean aktifnya
+        _release_active_ticket(prefix, serving_seq)
+        return True, f"Pelayanan nomor {current_number} selesai."
+
+    if normalized_action == "recall":
         _serving_status[prefix] = "DIPANGGIL"
-    elif normalized_action == "reset":
+        return True, f"Nomor {current_number} dipanggil ulang."
+
+    if normalized_action == "reset":
         defaults = DEFAULT_INITIAL_QUEUES.get(prefix, {"serving": 1, "issued": 3})
         _serving_counter[prefix] = defaults["serving"]
         _queue_counter[prefix] = defaults["issued"]
@@ -349,20 +430,110 @@ def advance_poli_queue(
         ]
         for k in keys_to_remove:
             _patient_active_tickets.pop(k, None)
-    else:
-        if serving_seq < issued_seq:
-            # Pasien sebelumnya otomatis selesai ketika dokter memanggil pasien berikutnya
-            prev_patient = _queue_patients.get(prefix, {}).get(serving_seq)
-            if prev_patient:
-                rm_key = str(prev_patient.get("noRm") or "").strip().upper()
-                if rm_key:
-                    _patient_active_tickets.pop(rm_key, None)
-            serving_seq += 1
-            _serving_counter[prefix] = serving_seq
-        _serving_status[prefix] = "DIPANGGIL"
+        return True, "Antrean poli dikembalikan ke kondisi awal."
 
-    _save_queue_state(prefix)
-    return get_poli_queue_snapshot(poli_name)
+    # call_next
+    if serving_seq >= issued_seq:
+        # Tidak ada pasien menunggu: jangan ubah state (nomor yang sudah SELESAI
+        # tidak boleh berubah kembali menjadi DIPANGGIL).
+        return False, "Tidak ada pasien yang menunggu di antrean ini."
+    # Pasien sebelumnya otomatis selesai ketika dokter memanggil pasien berikutnya
+    _release_active_ticket(prefix, serving_seq)
+    serving_seq += 1
+    _serving_counter[prefix] = serving_seq
+    _serving_status[prefix] = "DIPANGGIL"
+    return True, f"Memanggil nomor {prefix}-{serving_seq:03d}."
+
+
+def advance_poli_queue(
+    poli_name: str, queue_action: str = "call_next"
+) -> dict[str, Any]:
+    resolved_poli = resolve_poli_name(poli_name)
+    if resolved_poli is None:
+        raise ValueError(f"Poliklinik '{poli_name}' tidak terdaftar.")
+    normalized_action = normalize_queue_action(queue_action)
+    prefix = POLIKLINIK_CONFIG[resolved_poli]["prefix"]
+
+    with _QUEUE_LOCK:
+        changed, _ = _apply_queue_action(prefix, normalized_action)
+        if changed:
+            _save_queue_state(prefix)
+        return _get_poli_queue_snapshot_unlocked(resolved_poli)
+
+
+def build_queue_state(
+    poliklinik: Any = None, prefix: Any = None
+) -> tuple[int, dict[str, Any]]:
+    """Payload GET /api/queue: antrean terpilih + seluruh poli (konsisten dalam satu kunci)."""
+    requested = str(poliklinik or prefix or "").strip()
+    target_poli = resolve_poli_name(poliklinik, prefix) if requested else None
+    if requested and target_poli is None:
+        return 404, {
+            "success": False,
+            "message": f"Poliklinik '{requested}' tidak terdaftar.",
+        }
+
+    with _QUEUE_LOCK:
+        all_queues = [
+            _get_poli_queue_snapshot_unlocked(poli) for poli in POLIKLINIK_CONFIG
+        ]
+    selected = next(
+        (q for q in all_queues if q["poliklinik"] == target_poli),
+        all_queues[0] if all_queues else None,
+    )
+    return 200, {
+        "success": True,
+        "count": len(all_queues),
+        "queue": selected,
+        "queues": all_queues,
+        "minutesPerPatient": MINUTES_PER_PATIENT,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def handle_queue_action(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Payload POST /api/queue/action, contoh: {"action": "NEXT", "poliklinik": "Poli Umum"}."""
+    raw_action = payload.get("queueAction") or payload.get("action")
+    try:
+        normalized_action = normalize_queue_action(raw_action)
+    except ValueError as error:
+        return 400, {"success": False, "message": str(error)}
+
+    raw_poli = payload.get("poliklinik") or payload.get("poli")
+    raw_prefix = payload.get("prefix")
+    if not str(raw_poli or raw_prefix or "").strip():
+        return 400, {
+            "success": False,
+            "message": "Field 'poliklinik' wajib diisi untuk aksi antrean.",
+        }
+    poli_name = resolve_poli_name(raw_poli, raw_prefix)
+    if poli_name is None:
+        return 404, {
+            "success": False,
+            "message": f"Poliklinik '{raw_poli or raw_prefix}' tidak terdaftar.",
+        }
+
+    prefix = POLIKLINIK_CONFIG[poli_name]["prefix"]
+    with _QUEUE_LOCK:
+        changed, message = _apply_queue_action(prefix, normalized_action)
+        if changed:
+            _save_queue_state(prefix)
+        updated_queue = _get_poli_queue_snapshot_unlocked(poli_name)
+        all_queues = [
+            _get_poli_queue_snapshot_unlocked(poli) for poli in POLIKLINIK_CONFIG
+        ]
+
+    return 200, {
+        "success": True,
+        "status": "QUEUE_ADVANCED" if changed else "QUEUE_UNCHANGED",
+        "action": normalized_action,
+        "changed": changed,
+        "message": message,
+        "queue": updated_queue,
+        "queues": all_queues,
+        "minutesPerPatient": MINUTES_PER_PATIENT,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _json_response(
@@ -521,6 +692,18 @@ def _generate_queue_ticket(
     requested_poli: str | None = None,
     image_hash: str | None = None,
 ) -> dict[str, Any]:
+    # Cek tiket aktif + increment counter harus atomik terhadap request paralel
+    with _QUEUE_LOCK:
+        return _generate_queue_ticket_unlocked(
+            patient, requested_poli=requested_poli, image_hash=image_hash
+        )
+
+
+def _generate_queue_ticket_unlocked(
+    patient: dict[str, Any],
+    requested_poli: str | None = None,
+    image_hash: str | None = None,
+) -> dict[str, Any]:
     person_id = str(patient.get("personId") or "").strip()
     no_rm = str(patient.get("noRm") or person_id or "").strip()
 
@@ -606,9 +789,13 @@ def _generate_queue_ticket(
 
 def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
     face = face_match.get("Face", {})
-    person_id = face.get("ExternalImageId") or face.get("FaceId")
-    if not person_id:
+    matched_face_id = face.get("ExternalImageId") or face.get("FaceId")
+    if not matched_face_id:
         raise RuntimeError("Matched face has no identity")
+    # Enrollment multi-angle menyimpan sampel tambahan sebagai "<id>__pose<N>";
+    # tanpa normalisasi ini satu pasien terfragmentasi menjadi beberapa identitas.
+    base_face_id = str(matched_face_id).split("__pose")[0]
+    person_id = str(face.get("CanonicalPersonId") or base_face_id)
 
     similarity = float(face_match.get("Similarity", 0))
     no_rm = face.get("NoRm") or face.get("Nim") or person_id
@@ -643,7 +830,10 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "personId": person_id,
+        "canonicalPersonId": person_id,
+        "matchedFaceId": str(matched_face_id),
         "noRm": no_rm,
+        "rmNumber": no_rm,
         "nim": no_rm,
         "nik": face.get("Nik") or "3273010000000001",
         "fullName": face.get("FullName") or person_id,
@@ -655,6 +845,7 @@ def _extract_identity_metadata(face_match: dict[str, Any]) -> dict[str, Any]:
         "allergies": face.get("Allergies") or "Tidak Ada Alergi",
         "chronicConditions": face.get("ChronicConditions") or "Tidak Ada",
         "poliklinik": poliklinik,
+        "defaultPoli": poliklinik,
         "dokter": face.get("Dokter")
         or poli_info.get("dokter", "dr. Hendra Wijaya, Sp.PD"),
         "medicalNotes": medical_notes,
@@ -881,29 +1072,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     path = str(event.get("path") or "").rstrip("/")
 
-    # Handle GET /queue and GET /queues
+    # Handle GET /api/queue, /queue, /queues (state antrean terkini)
     if method == "GET":
         query_params = event.get("queryStringParameters") or {}
         if not isinstance(query_params, dict):
             query_params = {}
-        poli_name = query_params.get("poliklinik") or query_params.get("poli")
-        prefix = query_params.get("prefix")
-        if not poli_name and prefix:
-            poli_name = next(
-                (k for k, v in POLIKLINIK_CONFIG.items() if v["prefix"].upper() == prefix.upper()),
-                None,
-            )
-        snapshot = get_poli_queue_snapshot(poli_name) if poli_name else get_all_queues_status()[0]
-        return _json_response(
-            200,
-            {
-                "success": True,
-                "count": len(POLIKLINIK_CONFIG),
-                "queue": snapshot,
-                "queues": get_all_queues_status(),
-                "updatedAt": datetime.now(timezone.utc).isoformat(),
-            },
+        status_code, body = build_queue_state(
+            query_params.get("poliklinik") or query_params.get("poli"),
+            query_params.get("prefix"),
         )
+        return _json_response(status_code, body)
 
     if method and method != "POST":
         return _json_response(
@@ -912,45 +1090,30 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     try:
         payload = _parse_request_body(event)
-        collection_id = os.environ.get("REKOGNITION_COLLECTION_ID")
-        if not collection_id:
-            raise RuntimeError("REKOGNITION_COLLECTION_ID is not configured")
+        action = str(payload.get("action") or "").strip().lower()
 
-        action = str(payload.get("action") or "").lower()
-        queue_action = str(payload.get("queueAction") or action or "call_next").strip().lower()
-
-        # Handle POST /queue/action, /queues/advance, and queue actions
+        # Handle POST /api/queue/action (NEXT / FINISH / RECALL / RESET).
+        # Diproses sebelum cek konfigurasi Rekognition karena aksi antrean
+        # tidak membutuhkan layanan biometrik.
         if (
             path.endswith("/queue/action")
             or path.endswith("/queues/advance")
-            or action in ("advance_queue", "queue_action", "call_next", "complete", "recall", "reset")
+            or action in QUEUE_ACTION_ALIASES
             or "queueAction" in payload
         ):
-            poli_name = str(payload.get("poliklinik") or "Poli Penyakit Dalam").strip()
-            updated_queue = advance_poli_queue(poli_name, queue_action=queue_action)
-            return _json_response(
-                200,
-                {
-                    "success": True,
-                    "status": "QUEUE_ADVANCED",
-                    "action": queue_action,
-                    "queue": updated_queue,
-                    "queues": get_all_queues_status(),
-                    "updatedAt": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+            status_code, body = handle_queue_action(payload)
+            return _json_response(status_code, body)
 
         # Handle POST to /queue or /queues without action (returns status)
         if path.endswith("/queue") or path.endswith("/queues"):
-            return _json_response(
-                200,
-                {
-                    "success": True,
-                    "count": len(POLIKLINIK_CONFIG),
-                    "queues": get_all_queues_status(),
-                    "updatedAt": datetime.now(timezone.utc).isoformat(),
-                },
+            status_code, body = build_queue_state(
+                payload.get("poliklinik"), payload.get("prefix")
             )
+            return _json_response(status_code, body)
+
+        collection_id = os.environ.get("REKOGNITION_COLLECTION_ID")
+        if not collection_id:
+            raise RuntimeError("REKOGNITION_COLLECTION_ID is not configured")
 
         if path.endswith("/medical-record") or action == "add_medical_record":
             added = _add_medical_record(payload)

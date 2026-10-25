@@ -442,9 +442,13 @@ def _row_to_patient_dict(
         "person_id": row["person_id"],
         "canonical_person_id": canonical_pid,
         "no_rm": row["no_rm"],
+        # Skema pasien seragam (rmNumber, fullName, birthDate, defaultPoli, medicalNotes)
+        "rm_number": row["no_rm"],
+        "rmNumber": row["no_rm"],
         "nim": row["nim"] or row["no_rm"],
         "nik": row["nik"] or "-",
         "full_name": row["full_name"],
+        "fullName": row["full_name"],
         "birth_date": birth_date or "1995-01-01",
         "birthDate": birth_date or "1995-01-01",
         "gender": row["gender"],
@@ -455,6 +459,8 @@ def _row_to_patient_dict(
         "allergies": row["allergies"],
         "chronic_conditions": row["chronic_conditions"],
         "poliklinik": row["poliklinik"],
+        "default_poli": row["poliklinik"],
+        "defaultPoli": row["poliklinik"],
         "dokter": row["dokter"],
         "medical_notes": med_notes,
         "medicalNotes": med_notes,
@@ -501,6 +507,18 @@ def get_all_patients_map() -> dict[str, dict[str, Any]]:
             rm = p["no_rm"]
             hist = history_by_pid.get(pid) or history_by_rm.get(rm) or []
             result[pid] = _row_to_patient_dict(p, hist)
+
+        # Profil utama mencantumkan seluruh sampel wajah yang tertaut kepadanya
+        # (mis. RM-2026-501B <- 2702385671, MHS-WEBCAM-USER, RM-2026-58DB, RM-2026-A204).
+        linked_by_canonical: dict[str, list[str]] = {}
+        for pid, info in result.items():
+            linked_by_canonical.setdefault(info["canonical_person_id"], []).append(pid)
+        for pid, info in result.items():
+            if info["canonical_person_id"] == pid:
+                face_ids = linked_by_canonical.get(pid, [pid])
+                info["linked_face_ids"] = sorted(
+                    set(face_ids), key=lambda x: (x != pid, x)
+                )
         return result
 
 

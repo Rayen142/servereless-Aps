@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ENROLLED_PATIENT_PROFILES,
   fetchHospitalAnalytics,
-  type EvaluationCaseResult,
   type HospitalAnalyticsData,
 } from '../lib/hospital';
 import {
@@ -10,10 +9,38 @@ import {
   downloadSatusehatFhirJson,
 } from '../lib/satusehat';
 import {
-  ActivityIcon,
+  buildReportCsv,
+  buildSummaryCsv,
+  buildSweepCsv,
+  buildThresholdSweep,
+  confusionAtThreshold,
+  confusionFromOutcomes,
+  datasetFromBackend,
+  datasetFromScript,
+  deriveRates,
+  downloadCsv,
+  estimateServerlessCost,
+  findEer,
+  loadScriptSummary,
+  SWEEP_MAX_THRESHOLD,
+  SWEEP_MIN_THRESHOLD,
+  type CostInputs,
+  type ScientificDataset,
+  type ScientificSource,
+  type SummaryRow,
+} from '../lib/evaluationMetrics';
+import { useEdgeLatencyBenchmark } from '../hooks/useEdgeLatencyBenchmark';
+import {
+  BiometricMetricCards,
+  LatencyBreakdownPanel,
+  ServerlessCostCard,
+  ThresholdSensitivityPanel,
+  estimateNetworkMs,
+  type NetworkEstimate,
+} from './EvaluationScientificPanels';
+import {
   AlertIcon,
   CheckIcon,
-  ClockIcon,
   DownloadIcon,
   FileTextIcon,
   RefreshIcon,
@@ -21,41 +48,16 @@ import {
   UsersIcon,
 } from './icons';
 
-function exportEvaluationCsv(cases: readonly EvaluationCaseResult[]) {
-  const headers = [
-    'Case_ID',
-    'Type',
-    'Full_Name',
-    'Expected_ID',
-    'Predicted_ID',
-    'Similarity_Pct',
-    'Latency_Ms',
-    'Outcome',
-  ];
-  const rows = cases.map((c) => [
-    c.caseId,
-    c.type,
-    `"${c.fullName.replace(/"/g, '""')}"`,
-    c.expectedPersonId ?? '-',
-    c.predictedPersonId ?? 'NOT_RECOGNIZED',
-    c.similarity.toFixed(2),
-    c.latencyMs.toFixed(2),
-    c.outcome,
-  ]);
-  const csvContent =
-    'data:text/csv;charset=utf-8,' +
-    [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-  const encodedUri = encodeURI(csvContent);
-  const link = document.createElement('a');
-  link.setAttribute('href', encodedUri);
-  link.setAttribute(
-    'download',
-    `evaluasi_biometrik_simrs_${new Date().toISOString().slice(0, 10)}.csv`,
-  );
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-}
+/** Laporan skrip dibaca sekali saat modul dimuat (artefak statis hasil test_verify_api.py). */
+const SCRIPT_SUMMARY = loadScriptSummary();
+
+const DEFAULT_LAMBDA_DURATION_MS = 400;
+const DEFAULT_USD_TO_IDR = 16000;
+
+const clampThreshold = (t: number) =>
+  Math.min(SWEEP_MAX_THRESHOLD, Math.max(SWEEP_MIN_THRESHOLD, Math.round(t)));
+
+const fileStamp = () => new Date().toISOString().slice(0, 10);
 
 function EvaluationDashboardPage() {
   const [data, setData] = useState<HospitalAnalyticsData | null>(null);
@@ -69,6 +71,17 @@ function EvaluationDashboardPage() {
   const [selectedSampleRm, setSelectedSampleRm] = useState<string>(
     ENROLLED_PATIENT_PROFILES[0]?.noRm ?? 'RM-2026-0001',
   );
+  const [preferredSource, setPreferredSource] = useState<ScientificSource>(
+    SCRIPT_SUMMARY ? 'script' : 'backend',
+  );
+  const [sliderThreshold, setSliderThreshold] = useState<number | null>(null);
+  const [network, setNetwork] = useState<NetworkEstimate>({
+    uplinkMbps: 10,
+    rttMs: 40,
+  });
+  const [usdToIdr, setUsdToIdr] = useState(DEFAULT_USD_TO_IDR);
+  const [costOverrides, setCostOverrides] = useState<CostInputs | null>(null);
+  const edgeBench = useEdgeLatencyBenchmark();
 
   const loadAnalytics = useCallback(async (forceRefresh = false) => {
     if (forceRefresh) {
@@ -95,7 +108,55 @@ function EvaluationDashboardPage() {
     void loadAnalytics(false);
   }, [loadAnalytics]);
 
-  if (isLoading && !data) {
+  const evalReport = data?.evaluation ?? null;
+
+  /* -------------------- Sumber data ilmiah ternormalisasi -------------------- */
+  const dataset: ScientificDataset | null = useMemo(() => {
+    const fromScript = SCRIPT_SUMMARY ? datasetFromScript(SCRIPT_SUMMARY) : null;
+    const fromBackend =
+      evalReport && evalReport.cases.length > 0 ? datasetFromBackend(evalReport) : null;
+    if (preferredSource === 'script') return fromScript ?? fromBackend;
+    return fromBackend ?? fromScript;
+  }, [evalReport, preferredSource]);
+
+  const operationalThreshold = dataset?.threshold ?? 80;
+  const activeThreshold = clampThreshold(sliderThreshold ?? operationalThreshold);
+
+  const sweep = useMemo(
+    () => (dataset ? buildThresholdSweep(dataset.cases) : []),
+    [dataset],
+  );
+  const eer = useMemo(() => findEer(sweep), [sweep]);
+  const operationalCm = useMemo(
+    () =>
+      dataset
+        ? confusionFromOutcomes(dataset.cases)
+        : { tp: 0, tn: 0, fp: 0, fn: 0 },
+    [dataset],
+  );
+  const operationalRates = deriveRates(operationalCm);
+
+  const measuredLambdaMs =
+    dataset?.mode === 'live-api'
+      ? (dataset.latency.warmAvgMs ?? dataset.latency.cloudAvgMs)
+      : null;
+  const costInputs: CostInputs = costOverrides ?? {
+    lambdaDurationMs: measuredLambdaMs ?? DEFAULT_LAMBDA_DURATION_MS,
+    lambdaMemoryMb: 1024,
+    writesPerScan: 1,
+    readsPerScan: 0,
+    includeApiGateway: true,
+    monthlyScans: 1000,
+    dedicatedMonthlyUsd: 30.37,
+  };
+  const durationSource =
+    costOverrides !== null
+      ? 'diubah manual'
+      : measuredLambdaMs !== null
+        ? `rata-rata warm terukur (${measuredLambdaMs.toFixed(0)} ms)`
+        : `asumsi ${DEFAULT_LAMBDA_DURATION_MS} ms (ganti dengan Duration CloudWatch)`;
+
+  if (isLoading && !data && !SCRIPT_SUMMARY) {
     return (
       <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-2xl border border-neutral-200/80 bg-white p-8 text-center">
         <span className="h-7 w-7 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-900" />
@@ -106,14 +167,91 @@ function EvaluationDashboardPage() {
     );
   }
 
-  const evalReport = data?.evaluation ?? null;
-  const cases = evalReport?.cases ?? [];
+  const cases = dataset?.cases ?? [];
   const positiveCasesCount = cases.filter((c) => c.type === 'POSITIVE').length;
-  const negativeCasesCount = cases.filter((c) => c.type === 'NEGATIVE').length;
+  const negativeCasesCount = cases.length - positiveCasesCount;
 
   const filteredCases = cases.filter((c) =>
     caseFilter === 'ALL' ? true : c.type === caseFilter,
   );
+
+  /* ------------------------------ Ekspor CSV ------------------------------ */
+  const exportReportCsv = () => {
+    if (!dataset) return;
+    downloadCsv(`evaluation_report_${fileStamp()}.csv`, buildReportCsv(dataset.cases));
+  };
+
+  const exportSweepCsv = () => {
+    if (sweep.length === 0) return;
+    downloadCsv(`evaluation_threshold_sweep_${fileStamp()}.csv`, buildSweepCsv(sweep));
+  };
+
+  const exportSummaryCsv = () => {
+    if (!dataset) return;
+    const lat = dataset.latency;
+    const edge = edgeBench.result;
+    const cost = estimateServerlessCost(costInputs);
+    const netMs = lat.networkMeasured
+      ? lat.networkAvgMs
+      : estimateNetworkMs(dataset.avgPayloadKb, network);
+    const rows: SummaryRow[] = [
+      ['dataset', 'source', dataset.sourceLabel, '', ''],
+      ['dataset', 'mode', dataset.mode, '', ''],
+      ['dataset', 'generated_at', dataset.generatedAt, '', ''],
+      ['dataset', 'total_cases', cases.length, 'sampel', ''],
+      ['dataset', 'positive_cases', positiveCasesCount, 'sampel', 'test_positive/'],
+      ['dataset', 'negative_cases', negativeCasesCount, 'sampel', 'test_negative/'],
+      ['dataset', 'threshold', operationalThreshold, '%', 'MATCH_THRESHOLD'],
+      ['confusion_matrix', 'TP', operationalCm.tp, 'sampel', ''],
+      ['confusion_matrix', 'TN', operationalCm.tn, 'sampel', ''],
+      ['confusion_matrix', 'FP', operationalCm.fp, 'sampel', ''],
+      ['confusion_matrix', 'FN', operationalCm.fn, 'sampel', ''],
+      ['metrics', 'accuracy', operationalRates.accuracy, '%', '(TP+TN)/N'],
+      ['metrics', 'precision', operationalRates.precision, '%', 'TP/(TP+FP)'],
+      ['metrics', 'recall', operationalRates.recall, '%', 'TP/(TP+FN)'],
+      ['metrics', 'f1_score', operationalRates.f1Score, '%', '2PR/(P+R)'],
+      ['metrics', 'far', operationalRates.far, '%', 'FP/(FP+TN)'],
+      ['metrics', 'frr', operationalRates.frr, '%', 'FN/(FN+TP)'],
+      ['metrics', 'eer_threshold', eer?.threshold ?? '', '%', '|FAR-FRR| minimum'],
+      ['latency', 'edge_avg_ms', edge?.avgTotalMs ?? '', 'ms', 'BlazeFace + validateFaces (browser)'],
+      ['latency', 'edge_detect_avg_ms', edge?.avgDetectMs ?? '', 'ms', ''],
+      ['latency', 'edge_validate_avg_ms', edge?.avgValidateMs ?? '', 'ms', ''],
+      ['latency', 'edge_p95_ms', edge?.p95TotalMs ?? '', 'ms', ''],
+      ['latency', 'edge_model_load_ms', edge?.modelLoadMs ?? '', 'ms', 'cold load TF.js + bobot'],
+      ['latency', 'edge_first_inference_ms', edge?.firstInferenceMs ?? '', 'ms', 'kompilasi shader WebGL'],
+      [
+        'latency',
+        'network_avg_ms',
+        netMs !== null ? Math.round(netMs * 100) / 100 : '',
+        'ms',
+        lat.networkMeasured
+          ? 'terukur'
+          : `estimasi RTT ${network.rttMs} ms + uplink ${network.uplinkMbps} Mbps`,
+      ],
+      ['latency', 'cloud_avg_ms', lat.cloudAvgMs ?? '', 'ms', dataset.mode],
+      ['latency', 'rekognition_avg_ms', lat.rekognitionAvgMs ?? '', 'ms', 'SearchFacesByImage'],
+      ['latency', 'cold_start_ms', lat.coldStartMs ?? '', 'ms', lat.startDetection],
+      ['latency', 'warm_avg_ms', lat.warmAvgMs ?? '', 'ms', ''],
+      ['latency', 'total_p50_ms', lat.totalP50Ms ?? '', 'ms', ''],
+      ['latency', 'total_p95_ms', lat.totalP95Ms ?? '', 'ms', ''],
+      ['payload', 'avg_payload', dataset.avgPayloadKb ?? '', 'KB', 'JSON base64'],
+      ...cost.lines.map<SummaryRow>((l) => [
+        'cost',
+        `${l.key}_per_1000`,
+        Number(l.per1000Usd.toFixed(6)),
+        'USD',
+        l.formula,
+      ]),
+      ['cost', 'total_per_1000', Number(cost.per1000Usd.toFixed(6)), 'USD', 'us-east-1, tanpa Free Tier'],
+      ['cost', 'total_per_1000_idr', Math.round(cost.per1000Usd * usdToIdr), 'IDR', `kurs ${usdToIdr}`],
+      ['cost', 'monthly_scans', costInputs.monthlyScans, 'scan', ''],
+      ['cost', 'monthly_serverless', Number(cost.monthlyServerlessUsd.toFixed(4)), 'USD', ''],
+      ['cost', 'monthly_dedicated', cost.monthlyDedicatedUsd, 'USD', 'EC2 t3.medium on-demand'],
+      ['cost', 'break_even_scans', cost.breakEvenScansPerMonth, 'scan/bulan', ''],
+      ...dataset.notes.map<SummaryRow>((n) => ['notes', 'catatan', '', '', n]),
+    ];
+    downloadCsv(`evaluation_summary_${fileStamp()}.csv`, buildSummaryCsv(rows));
+  };
 
   const logs = data?.recentLogs ?? [];
   const filteredLogs = logs.filter((l) => {
@@ -167,11 +305,13 @@ function EvaluationDashboardPage() {
             />
             <div>
               <p className="font-semibold text-rose-900">
-                Data Evaluasi Tidak Tersedia
+                {dataset ? 'Backend Evaluasi Tidak Terhubung' : 'Data Evaluasi Tidak Tersedia'}
               </p>
               <p className="mt-0.5 text-rose-800">
                 {loadError ??
                   'Tidak dapat memuat laporan evaluasi dari server backend. Metrik tidak ditampilkan untuk menjaga integritas data pengujian.'}
+                {dataset?.source === 'script' &&
+                  ' Metrik ilmiah di bawah tetap ditampilkan dari laporan skrip dataset/evaluation_summary.json.'}
               </p>
             </div>
           </div>
@@ -197,7 +337,11 @@ function EvaluationDashboardPage() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">
               <ShieldCheckIcon width={13} height={13} />
-              Ensemble CLAHE + Spatial LBPH + HOG + ORB
+              {dataset?.source === 'script'
+                ? dataset.mode === 'live-api'
+                  ? 'Live API Gateway + Amazon Rekognition'
+                  : 'Simulasi lambda_handler (mock Rekognition)'
+                : 'Ensemble CLAHE + Spatial LBPH + HOG + ORB'}
             </span>
             <span className="rounded-full bg-neutral-100 px-2.5 py-0.5 font-mono text-[11px] font-medium text-neutral-600">
               RAM Cache:{' '}
@@ -214,24 +358,81 @@ function EvaluationDashboardPage() {
             )}
           </div>
           <h2 className="mt-2 text-base font-semibold text-neutral-900">
-            Hasil Pengujian Akurasi Biometrik & Performa Sistem
+            Hasil Pengujian Akurasi Biometrik &amp; Performa Sistem
           </h2>
           <p className="mt-0.5 text-xs text-neutral-500">
-            {evalReport
-              ? `Pengujian otomatis terhadap ${evalReport.totalCases} skenario uji (${positiveCasesCount} subjek terdaftar positif & ${negativeCasesCount} wajah tidak terdaftar negatif) dengan ambang batas kemiripan ${evalReport.threshold}%.`
-              : 'Menunggu koneksi ke layanan evaluasi biometrik untuk menampilkan rincian skenario uji.'}
+            {dataset
+              ? `Pengujian ${cases.length} skenario uji (${positiveCasesCount} subjek terdaftar positif & ${negativeCasesCount} wajah tidak terdaftar negatif) dengan ambang batas kemiripan ${operationalThreshold}%. Sumber: ${dataset.sourceLabel} · ${new Date(dataset.generatedAt).toLocaleString('id-ID')}.`
+              : 'Menunggu koneksi ke layanan evaluasi biometrik atau jalankan `python dataset/test_verify_api.py` untuk menghasilkan laporan.'}
           </p>
+          {SCRIPT_SUMMARY && evalReport && (
+            <div
+              className="mt-2 inline-flex items-center gap-1 rounded-full bg-neutral-100 p-1 text-[11px]"
+              role="tablist"
+              aria-label="Sumber data evaluasi"
+            >
+              {(
+                [
+                  ['script', 'Laporan Skrip (Bab 4)'],
+                  ['backend', 'Backend /analytics'],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  id={`source-toggle-${key}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={preferredSource === key}
+                  onClick={() => {
+                    setPreferredSource(key);
+                    setSliderThreshold(null);
+                  }}
+                  className={`rounded-full px-2.5 py-1 font-medium transition ${
+                    preferredSource === key
+                      ? 'bg-white text-neutral-900 shadow-sm'
+                      : 'text-neutral-500 hover:text-neutral-900'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
+            id="export-report-csv"
             type="button"
-            onClick={() => exportEvaluationCsv(cases)}
+            onClick={exportReportCsv}
             disabled={cases.length === 0}
+            title="Kolom identik dengan dataset/evaluation_report.csv"
             className="inline-flex h-9 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
           >
             <DownloadIcon width={14} height={14} />
-            Ekspor CSV Skripsi
+            CSV Per-Sampel
+          </button>
+          <button
+            id="export-summary-csv"
+            type="button"
+            onClick={exportSummaryCsv}
+            disabled={cases.length === 0}
+            title="Ringkasan metrik, latensi, dan biaya (section,metric,value,unit,notes)"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
+          >
+            <DownloadIcon width={14} height={14} />
+            CSV Ringkasan Bab 4
+          </button>
+          <button
+            id="export-sweep-csv"
+            type="button"
+            onClick={exportSweepCsv}
+            disabled={sweep.length === 0}
+            title="Sensitivitas threshold 75%–99% (FAR vs FRR)"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
+          >
+            <DownloadIcon width={14} height={14} />
+            CSV Sweep Threshold
           </button>
 
           <button
@@ -254,330 +455,208 @@ function EvaluationDashboardPage() {
         </div>
       </div>
 
-      {/* 5 Kartu Metrik Utama (Tanpa Nilai Hardcoded Palsu) */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <div className="rounded-2xl border border-neutral-200/80 bg-white p-4">
-          <span className="text-[11px] font-medium text-neutral-400">
-            Accuracy (Akurasi)
-          </span>
-          <p className="mt-1 font-mono text-2xl font-bold text-neutral-900">
-            {evalReport ? `${evalReport.accuracy.toFixed(1)}%` : '—'}
-          </p>
-          <span className="mt-1 block text-[11px] font-medium text-emerald-600">
-            {evalReport
-              ? `(TP + TN) / ${evalReport.totalCases} sampel`
-              : 'Data tidak tersedia'}
-          </span>
-        </div>
+      {dataset && dataset.notes.length > 0 && (
+        <ul className="space-y-1 rounded-2xl border border-amber-200/70 bg-amber-50/60 px-5 py-3 text-[11px] text-amber-900">
+          {dataset.notes.map((n) => (
+            <li key={n} className="flex items-start gap-1.5">
+              <AlertIcon width={12} height={12} className="mt-0.5 shrink-0 text-amber-600" />
+              {n}
+            </li>
+          ))}
+        </ul>
+      )}
 
-        <div className="rounded-2xl border border-neutral-200/80 bg-white p-4">
-          <span className="text-[11px] font-medium text-neutral-400">
-            Precision (Presisi)
-          </span>
-          <p className="mt-1 font-mono text-2xl font-bold text-neutral-900">
-            {evalReport ? `${evalReport.precision.toFixed(1)}%` : '—'}
-          </p>
-          <span className="mt-1 block text-[11px] text-neutral-500">
-            {evalReport
-              ? `TP / (TP + FP) · ${evalReport.fp} False Accept`
-              : 'Data tidak tersedia'}
-          </span>
-        </div>
+      {dataset && (
+        <>
+          {/* 1. Metrik Akurasi Biometrik */}
+          <BiometricMetricCards
+            cm={operationalCm}
+            rates={operationalRates}
+            threshold={operationalThreshold}
+            positives={positiveCasesCount}
+            negatives={negativeCasesCount}
+          />
 
-        <div className="rounded-2xl border border-neutral-200/80 bg-white p-4">
-          <span className="text-[11px] font-medium text-neutral-400">
-            Recall (Sensitivitas)
-          </span>
-          <p className="mt-1 font-mono text-2xl font-bold text-neutral-900">
-            {evalReport ? `${evalReport.recall.toFixed(1)}%` : '—'}
-          </p>
-          <span className="mt-1 block text-[11px] text-neutral-500">
-            {evalReport
-              ? `TP / (TP + FN) · ${evalReport.tp}/${positiveCasesCount} Terdeteksi`
-              : 'Data tidak tersedia'}
-          </span>
-        </div>
+          {/* 2. Threshold Sensitivity + Tabel Sampel */}
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+            <ThresholdSensitivityPanel
+              dataset={dataset}
+              sweep={sweep}
+              eer={eer}
+              value={activeThreshold}
+              onChange={setSliderThreshold}
+            />
 
-        <div className="rounded-2xl border border-neutral-200/80 bg-white p-4">
-          <span className="text-[11px] font-medium text-neutral-400">
-            F1-Score
-          </span>
-          <p className="mt-1 font-mono text-2xl font-bold text-emerald-700">
-            {evalReport ? `${evalReport.f1Score.toFixed(1)}%` : '—'}
-          </p>
-          <span className="mt-1 block text-[11px] text-neutral-500">
-            {evalReport
-              ? 'Harmonic Mean Precision & Recall'
-              : 'Data tidak tersedia'}
-          </span>
-        </div>
+            <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-neutral-900">
+                    Rincian Sampel Pengujian ({cases.length})
+                  </h3>
+                  <p className="text-xs text-neutral-500">
+                    Skor terbaik, latensi, hasil aktual & hasil pada ambang {activeThreshold}%
+                  </p>
+                </div>
 
-        <div className="col-span-2 sm:col-span-1 rounded-2xl border border-neutral-200/80 bg-white p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium text-neutral-400">
-              Rata-rata Latency
-            </span>
-            <ClockIcon width={13} height={13} className="text-neutral-400" />
-          </div>
-          <p className="mt-1 font-mono text-2xl font-bold text-neutral-900">
-            {evalReport ? (
-              <>
-                {evalReport.avgLatencyMs.toFixed(1)}{' '}
-                <span className="text-xs font-normal text-neutral-500">ms</span>
-              </>
-            ) : (
-              '—'
-            )}
-          </p>
-          <span className="mt-1 block text-[11px] text-neutral-500">
-            {evalReport
-              ? 'In-Memory Descriptor Cache Aktif'
-              : 'Data tidak tersedia'}
-          </span>
-        </div>
-      </div>
-
-      {/* Confusion Matrix & Tabel Sampel Uji */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-        {/* Confusion Matrix */}
-        <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-sm font-semibold text-neutral-900">
-                Confusion Matrix (Matriks Konfusi)
-              </h3>
-              <p className="text-xs text-neutral-500">
-                {evalReport
-                  ? `Evaluasi klasifikasi biner pada threshold ${evalReport.threshold}%`
-                  : 'Data matriks konfusi tidak tersedia'}
-              </p>
-            </div>
-            <ActivityIcon width={16} height={16} className="text-neutral-400" />
-          </div>
-
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-emerald-900">
-                  True Positive (TP)
-                </span>
-                <span className="rounded bg-emerald-200/70 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-950">
-                  VALID MATCH
-                </span>
-              </div>
-              <p className="mt-2 font-mono text-3xl font-bold text-emerald-900">
-                {evalReport ? evalReport.tp : '—'}
-              </p>
-              <p className="mt-1 text-[11px] text-emerald-800">
-                Pasien terdaftar berhasil dikenali sesuai identitas No. RM.
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-neutral-700">
-                  False Positive (FP)
-                </span>
-                <span className="rounded bg-neutral-200 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-neutral-700">
-                  FALSE ACCEPT
-                </span>
-              </div>
-              <p className="mt-2 font-mono text-3xl font-bold text-neutral-900">
-                {evalReport ? evalReport.fp : '—'}
-              </p>
-              <p className="mt-1 text-[11px] text-neutral-500">
-                Wajah asing yang salah dikenali sebagai pasien terdaftar.
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-neutral-700">
-                  False Negative (FN)
-                </span>
-                <span className="rounded bg-neutral-200 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-neutral-700">
-                  FALSE REJECT
-                </span>
-              </div>
-              <p className="mt-2 font-mono text-3xl font-bold text-neutral-900">
-                {evalReport ? evalReport.fn : '—'}
-              </p>
-              <p className="mt-1 text-[11px] text-neutral-500">
-                Pasien terdaftar yang gagal dikenali oleh sistem kamera.
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-teal-200 bg-teal-50/60 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-teal-900">
-                  True Negative (TN)
-                </span>
-                <span className="rounded bg-teal-200/70 px-1.5 py-0.5 font-mono text-[10px] font-bold text-teal-950">
-                  VALID REJECT
-                </span>
-              </div>
-              <p className="mt-2 font-mono text-3xl font-bold text-teal-900">
-                {evalReport ? evalReport.tn : '—'}
-              </p>
-              <p className="mt-1 text-[11px] text-teal-800">
-                Wajah tidak terdaftar berhasil ditolak secara akurat.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-2 rounded-xl border border-neutral-100 bg-neutral-50/80 p-3 text-xs text-neutral-600">
-            <div className="flex items-center justify-between">
-              <span className="font-medium text-neutral-700">
-                Database Lokal SQLite (Relational WAL)
-              </span>
-              <span className="font-mono text-[11px] font-semibold text-emerald-700">
-                {data?.database?.dbPath ?? 'dataset/simrs_biometric.db'}
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5 pt-1 text-[11px] sm:grid-cols-3">
-              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
-                <span className="text-neutral-400 block">Tabel patients</span>
-                <strong className="font-mono text-neutral-900">
-                  {data?.database?.tables.patients !== undefined
-                    ? `${data.database.tables.patients} baris`
-                    : data?.totalRegisteredPatients !== undefined
-                      ? `${data.totalRegisteredPatients} baris`
-                      : 'Tidak tersedia'}
-                </strong>
-              </div>
-              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
-                <span className="text-neutral-400 block">medical_records</span>
-                <strong className="font-mono text-neutral-900">
-                  {data?.database?.tables.medical_records !== undefined
-                    ? `${data.database.tables.medical_records} baris`
-                    : 'Tidak tersedia'}
-                </strong>
-              </div>
-              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
-                <span className="text-neutral-400 block">attendance_logs</span>
-                <strong className="font-mono text-neutral-900">
-                  {data?.database?.tables.attendance_logs !== undefined
-                    ? `${data.database.tables.attendance_logs} baris`
-                    : data?.totalAttendanceLogs !== undefined
-                      ? `${data.totalAttendanceLogs} baris`
-                      : 'Tidak tersedia'}
-                </strong>
-              </div>
-              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60">
-                <span className="text-neutral-400 block">poli_queues</span>
-                <strong className="font-mono text-neutral-900">
-                  {data?.database?.tables.poli_queues !== undefined
-                    ? `${data.database.tables.poli_queues} poli`
-                    : 'Tidak tersedia'}
-                </strong>
-              </div>
-              <div className="rounded-lg bg-white px-2.5 py-1.5 border border-neutral-200/60 col-span-2 sm:col-span-2">
-                <span className="text-neutral-400 block">queue_slots (Aktif)</span>
-                <strong className="font-mono text-neutral-900">
-                  {data?.database?.tables.active_queue_slots !== undefined
-                    ? `${data.database.tables.active_queue_slots} slot antrean aktif`
-                    : 'Tidak tersedia'}
-                </strong>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Tabel Detail Kasus Uji Dataset */}
-        <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-semibold text-neutral-900">
-                Rincian Sampel Pengujian Biometrik ({cases.length})
-              </h3>
-              <p className="text-xs text-neutral-500">
-                Skor kemiripan dan waktu komputasi per citra uji
-              </p>
-            </div>
-
-            <div className="flex items-center gap-1 rounded-full bg-neutral-100 p-1 text-xs">
-              {(['ALL', 'POSITIVE', 'NEGATIVE'] as const).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => setCaseFilter(f)}
-                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
-                    caseFilter === f
-                      ? 'bg-white text-neutral-900 shadow-sm'
-                      : 'text-neutral-500 hover:text-neutral-900'
-                  }`}
-                >
-                  {f === 'ALL'
-                    ? `Semua (${cases.length})`
-                    : f === 'POSITIVE'
-                      ? `Positif (${positiveCasesCount})`
-                      : `Negatif (${negativeCasesCount})`}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-3 max-h-72 overflow-y-auto rounded-xl border border-neutral-100">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-neutral-50 text-[11px] font-semibold text-neutral-500">
-                <tr>
-                  <th className="px-3 py-2">Kode</th>
-                  <th className="px-3 py-2">Subjek Uji</th>
-                  <th className="px-3 py-2">Prediksi ID</th>
-                  <th className="px-3 py-2 text-right">Kemiripan</th>
-                  <th className="px-3 py-2 text-right">Latency</th>
-                  <th className="px-3 py-2 text-center">Hasil</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-100">
-                {filteredCases.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="px-4 py-8 text-center text-xs text-neutral-400"
+                <div className="flex items-center gap-1 rounded-full bg-neutral-100 p-1 text-xs">
+                  {(['ALL', 'POSITIVE', 'NEGATIVE'] as const).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setCaseFilter(f)}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
+                        caseFilter === f
+                          ? 'bg-white text-neutral-900 shadow-sm'
+                          : 'text-neutral-500 hover:text-neutral-900'
+                      }`}
                     >
-                      Data hasil pengujian tidak tersedia.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredCases.map((c) => (
-                    <tr key={c.caseId} className="hover:bg-neutral-50/70">
-                      <td className="px-3 py-2 font-mono text-[11px] text-neutral-600">
-                        {c.caseId}
-                      </td>
-                      <td className="px-3 py-2 font-medium text-neutral-900">
-                        {c.fullName}
-                      </td>
-                      <td className="px-3 py-2 font-mono text-[11px] text-neutral-600">
-                        {c.predictedPersonId ?? 'DITOLAK'}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono font-medium text-neutral-800">
-                        {c.similarity.toFixed(1)}%
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono text-[11px] text-neutral-500">
-                        {c.latencyMs.toFixed(1)} ms
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 font-mono text-[10px] font-bold ${
-                            c.outcome === 'TP'
-                              ? 'bg-emerald-50 text-emerald-700'
-                              : c.outcome === 'TN'
-                                ? 'bg-teal-50 text-teal-700'
-                                : 'bg-rose-50 text-rose-700'
-                          }`}
-                        >
-                          {c.outcome}
-                        </span>
-                      </td>
+                      {f === 'ALL'
+                        ? `Semua (${cases.length})`
+                        : f === 'POSITIVE'
+                          ? `Positif (${positiveCasesCount})`
+                          : `Negatif (${negativeCasesCount})`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-3 max-h-[26rem] overflow-y-auto rounded-xl border border-neutral-100">
+                <table className="w-full text-left text-xs">
+                  <thead className="sticky top-0 bg-neutral-50 text-[11px] font-semibold text-neutral-500">
+                    <tr>
+                      <th className="px-3 py-2">Kode</th>
+                      <th className="px-3 py-2">Subjek Uji</th>
+                      <th className="px-3 py-2">Prediksi ID</th>
+                      <th className="px-3 py-2 text-right">Skor</th>
+                      <th className="px-3 py-2 text-right">Latency</th>
+                      <th className="px-3 py-2 text-center">Hasil</th>
+                      <th className="px-3 py-2 text-center">@{activeThreshold}%</th>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {filteredCases.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="px-4 py-8 text-center text-xs text-neutral-400"
+                        >
+                          Data hasil pengujian tidak tersedia.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredCases.map((c) => {
+                        const at = confusionAtThreshold([c], activeThreshold);
+                        const atOutcome = at.tp ? 'TP' : at.tn ? 'TN' : at.fp ? 'FP' : 'FN';
+                        const tone = (o: string) =>
+                          o === 'TP'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : o === 'TN'
+                              ? 'bg-teal-50 text-teal-700'
+                              : o === 'FP'
+                                ? 'bg-rose-50 text-rose-700'
+                                : 'bg-amber-50 text-amber-700';
+                        return (
+                          <tr key={c.case_id} className="hover:bg-neutral-50/70">
+                            <td className="px-3 py-2 font-mono text-[11px] text-neutral-600">
+                              {c.case_id}
+                            </td>
+                            <td className="px-3 py-2 font-medium text-neutral-900">
+                              {c.full_name}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-[11px] text-neutral-600">
+                              {c.predicted_person_id || 'DITOLAK'}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono font-medium text-neutral-800">
+                              {c.best_score.toFixed(1)}%
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono text-[11px] text-neutral-500">
+                              {c.latency_ms.toFixed(1)} ms
+                              {c.start_type === 'COLD' && (
+                                <span className="ml-1 rounded bg-sky-100 px-1 text-[9px] font-bold text-sky-800">
+                                  COLD
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <span
+                                className={`inline-block rounded-full px-2 py-0.5 font-mono text-[10px] font-bold ${tone(c.outcome)}`}
+                              >
+                                {c.outcome}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <span
+                                className={`inline-block rounded-full px-2 py-0.5 font-mono text-[10px] font-bold transition-colors ${tone(atOutcome)}`}
+                              >
+                                {atOutcome}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          {/* 3. Breakdown Latensi End-to-End */}
+          <LatencyBreakdownPanel
+            dataset={dataset}
+            edge={edgeBench.result}
+            edgeState={edgeBench.state}
+            edgeImageCount={edgeBench.imageCount}
+            onRunEdge={() => void edgeBench.run()}
+            network={network}
+            onNetworkChange={setNetwork}
+          />
+
+          {/* 4. Analisis Efisiensi Biaya Serverless */}
+          <ServerlessCostCard
+            inputs={costInputs}
+            onChange={setCostOverrides}
+            usdToIdr={usdToIdr}
+            onRateChange={setUsdToIdr}
+            durationSource={durationSource}
+          />
+        </>
+      )}
+
+      {/* Diagnostik Database Lokal SQLite */}
+      {data?.database && (
+        <section className="space-y-2 rounded-2xl border border-neutral-200/80 bg-white p-5 text-xs text-neutral-600">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-neutral-700">
+              Database Lokal SQLite (Relational WAL)
+            </span>
+            <span className="font-mono text-[11px] font-semibold text-emerald-700">
+              {data.database.dbPath ?? 'dataset/simrs_biometric.db'}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 pt-1 text-[11px] sm:grid-cols-5">
+            {(
+              [
+                ['Tabel patients', data.database.tables.patients, 'baris'],
+                ['medical_records', data.database.tables.medical_records, 'baris'],
+                ['attendance_logs', data.database.tables.attendance_logs, 'baris'],
+                ['poli_queues', data.database.tables.poli_queues, 'poli'],
+                ['queue_slots (Aktif)', data.database.tables.active_queue_slots, 'slot'],
+              ] as const
+            ).map(([label, v, unit]) => (
+              <div
+                key={label}
+                className="rounded-lg border border-neutral-200/60 bg-neutral-50 px-2.5 py-1.5"
+              >
+                <span className="block text-neutral-400">{label}</span>
+                <strong className="font-mono text-neutral-900">
+                  {v !== undefined ? `${v} ${unit}` : 'Tidak tersedia'}
+                </strong>
+              </div>
+            ))}
           </div>
         </section>
-      </div>
+      )}
 
       {/* Wawasan & Simulasi Interoperabilitas SATUSEHAT Kemenkes RI (HL7 FHIR R4) */}
       <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">

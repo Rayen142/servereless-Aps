@@ -15,6 +15,15 @@ export const POLIKLINIK_LIST = [
 
 export type QueueServingStatus = 'MENUNGGU' | 'DIPANGGIL' | 'SELESAI';
 export type QueueControlAction = 'call_next' | 'recall' | 'complete' | 'reset';
+/** Aksi pada kontrak REST POST /api/queue/action. */
+export type QueueApiAction = 'NEXT' | 'FINISH' | 'RECALL' | 'RESET';
+
+export const QUEUE_API_ACTION: Readonly<Record<QueueControlAction, QueueApiAction>> = {
+  call_next: 'NEXT',
+  complete: 'FINISH',
+  recall: 'RECALL',
+  reset: 'RESET',
+};
 
 export interface PoliQueueSnapshot {
   readonly poliklinik: string;
@@ -101,10 +110,16 @@ export interface HospitalAnalyticsData {
   readonly queues: readonly PoliQueueSnapshot[];
 }
 
-/** Objek profil pasien klinik utuh untuk unifikasi seluruh dataset biometrik SIMRS */
+/**
+ * Objek profil pasien klinik utuh untuk unifikasi seluruh dataset biometrik SIMRS.
+ * Skema seragam: rmNumber, fullName, birthDate, defaultPoli, medicalNotes.
+ */
 export interface PatientProfile {
   readonly personId: string;
-  readonly canonicalPersonId?: string;
+  /** ID profil rekam medis utama; sampel wajah alias menunjuk ke sini. */
+  readonly canonicalPersonId: string;
+  /** Nomor Rekam Medis resmi (alias seragam dari noRm). */
+  readonly rmNumber: string;
   readonly noRm: string;
   readonly fullName: string;
   readonly birthDate: string; // Tanggal Lahir (YYYY-MM-DD)
@@ -115,18 +130,46 @@ export interface PatientProfile {
   readonly insurance: string;
   readonly allergies: string;
   readonly chronicConditions: string;
+  /** Poliklinik tujuan default saat antrean diterbitkan otomatis. */
+  readonly defaultPoli: string;
   readonly poliklinik: string;
   readonly dokter: string;
   readonly medicalNotes: string; // Catatan Medis Singkat
   readonly medicalHistory: readonly MedicalHistoryItem[];
-  readonly linkedFaceIds?: readonly string[];
+  /** Seluruh ID sampel wajah (file enrolled / ExternalImageId) milik pasien ini. */
+  readonly linkedFaceIds: readonly string[];
+}
+
+/** Bentuk data mentah; atribut turunan dilengkapi oleh unifyPatientProfile(). */
+type RawPatientProfile = Omit<
+  PatientProfile,
+  'canonicalPersonId' | 'rmNumber' | 'defaultPoli' | 'linkedFaceIds'
+> &
+  Partial<
+    Pick<PatientProfile, 'canonicalPersonId' | 'rmNumber' | 'defaultPoli' | 'linkedFaceIds'>
+  >;
+
+function unifyPatientProfile(raw: RawPatientProfile): PatientProfile {
+  const canonicalPersonId = raw.canonicalPersonId ?? raw.personId;
+  const linkedFaceIds = Array.from(
+    new Set([canonicalPersonId, raw.personId, ...(raw.linkedFaceIds ?? [])]),
+  );
+  return {
+    ...raw,
+    canonicalPersonId,
+    rmNumber: raw.rmNumber ?? raw.noRm,
+    defaultPoli: raw.defaultPoli ?? raw.poliklinik,
+    linkedFaceIds,
+  };
 }
 
 /**
  * Daftar profil seluruh pasien terdaftar di SIMRS (20 MHS-2026-* + RM-2026-501B + RM-2026-F2C2).
  * Seluruh foto wajah di dataset/images/enrolled/ terpetakan secara utuh ke profil ini.
+ * Sampel wajah Candra yang terfragmentasi (2702385671, MHS-WEBCAM-USER, RM-2026-58DB,
+ * RM-2026-A204) disatukan ke profil utama RM-2026-501B melalui linkedFaceIds.
  */
-export const ENROLLED_PATIENT_PROFILES: readonly PatientProfile[] = [
+const RAW_PATIENT_PROFILES: readonly RawPatientProfile[] = [
   {
     personId: 'MHS-2026-001',
     noRm: 'RM-2026-0001',
@@ -709,6 +752,9 @@ export const ENROLLED_PATIENT_PROFILES: readonly PatientProfile[] = [
   },
 ];
 
+export const ENROLLED_PATIENT_PROFILES: readonly PatientProfile[] =
+  RAW_PATIENT_PROFILES.map(unifyPatientProfile);
+
 /**
  * Mencari profil pasien lengkap berdasarkan ID wajah, Nomor RM (3-digit atau 4-digit), NIK, atau Nama.
  */
@@ -720,9 +766,11 @@ export function resolvePatientProfile(query: string): PatientProfile | undefined
   for (const profile of ENROLLED_PATIENT_PROFILES) {
     if (
       profile.personId.toLowerCase() === norm ||
+      profile.canonicalPersonId.toLowerCase() === norm ||
+      profile.rmNumber.toLowerCase() === norm ||
       profile.noRm.toLowerCase() === norm ||
       profile.nik.toLowerCase() === norm ||
-      profile.linkedFaceIds?.some((id) => id.toLowerCase() === norm)
+      profile.linkedFaceIds.some((id) => id.toLowerCase() === norm)
     ) {
       return profile;
     }
@@ -923,43 +971,133 @@ export const hasRealAllergy = (allergies: string): boolean => {
   return norm !== '' && norm !== '-' && !norm.includes('tidak ada');
 };
 
+/** Respons GET /api/queue. */
+export interface QueueStateResponse {
+  readonly success: boolean;
+  readonly queue?: PoliQueueSnapshot | null;
+  readonly queues: readonly PoliQueueSnapshot[];
+  readonly minutesPerPatient?: number;
+  readonly updatedAt?: string;
+}
+
+/** Respons POST /api/queue/action. */
+export interface QueueActionResponse extends QueueStateResponse {
+  readonly status: 'QUEUE_ADVANCED' | 'QUEUE_UNCHANGED' | string;
+  readonly action: string;
+  readonly changed: boolean;
+  readonly message: string;
+}
+
+export type QueueApiResult<T> =
+  | { readonly ok: true; readonly data: T }
+  | { readonly ok: false; readonly error: string };
+
+const QUEUE_API_BASE = (import.meta.env.VITE_QUEUE_API_URL ?? '/api/queue').replace(
+  /\/+$/,
+  '',
+);
+const QUEUE_GET_TIMEOUT_MS = 4000;
+const QUEUE_ACTION_TIMEOUT_MS = 8000;
+
+function isQueueStateResponse(value: unknown): value is QueueStateResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as { queues?: unknown }).queues)
+  );
+}
+
+async function requestQueueApi(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<QueueApiResult<unknown>> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal });
+    let body: unknown = null;
+    try {
+      body = await resp.json();
+    } catch {
+      body = null;
+    }
+    if (!resp.ok) {
+      const serverMessage =
+        typeof body === 'object' && body !== null
+          ? (body as { message?: unknown }).message
+          : undefined;
+      return {
+        ok: false,
+        error:
+          typeof serverMessage === 'string' && serverMessage
+            ? serverMessage
+            : `Server antrean merespons HTTP ${resp.status}.`,
+      };
+    }
+    return { ok: true, data: body };
+  } catch (err) {
+    const aborted = err instanceof DOMException && err.name === 'AbortError';
+    return {
+      ok: false,
+      error: aborted
+        ? 'Server antrean tidak merespons (timeout).'
+        : 'Tidak dapat terhubung ke server antrean.',
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 /**
- * Mengambil status antrean poliklinik secara real-time via endpoint GET /queue (atau /queues).
+ * Mengambil state antrean terkini via GET /api/queue (nomor dilayani, berikutnya,
+ * sisa menunggu, estimasi waktu). Tidak ada fallback data statis: kegagalan
+ * dilaporkan agar UI dapat menampilkan status koneksi yang jujur.
  */
-export async function fetchPoliQueues(): Promise<readonly PoliQueueSnapshot[]> {
-  const apiUrl = import.meta.env.VITE_API_URL;
-  if (!apiUrl) {
-    return DEFAULT_POLI_QUEUES;
-  }
+export async function fetchQueueState(): Promise<QueueApiResult<QueueStateResponse>> {
+  const result = await requestQueueApi(
+    QUEUE_API_BASE,
+    { method: 'GET', headers: { Accept: 'application/json' }, cache: 'no-store' },
+    QUEUE_GET_TIMEOUT_MS,
+  );
+  if (!result.ok) return result;
+  return isQueueStateResponse(result.data)
+    ? { ok: true, data: result.data }
+    : { ok: false, error: 'Format respons antrean tidak valid.' };
+}
 
-  // Coba endpoint GET /queue terlebih dahulu, fallback ke /queues
-  const queueUrl = apiUrl.replace(/\/verify\/?$/, '/queue');
-  try {
-    const resp = await fetch(queueUrl);
-    if (resp.ok) {
-      const data = (await resp.json()) as { queues?: PoliQueueSnapshot[] };
-      if (Array.isArray(data.queues) && data.queues.length > 0) {
-        return data.queues;
-      }
-    }
-  } catch {
-    /* coba endpoint fallback */
+/**
+ * Mengirim aksi panel petugas ke POST /api/queue/action.
+ * 'call_next' → NEXT (Panggil Berikutnya), 'complete' → FINISH (Selesai).
+ */
+export async function sendQueueAction(
+  poliklinik: string,
+  action: QueueControlAction,
+): Promise<QueueApiResult<QueueActionResponse>> {
+  const result = await requestQueueApi(
+    `${QUEUE_API_BASE}/action`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ action: QUEUE_API_ACTION[action], poliklinik }),
+    },
+    QUEUE_ACTION_TIMEOUT_MS,
+  );
+  if (!result.ok) return result;
+  if (!isQueueStateResponse(result.data)) {
+    return { ok: false, error: 'Format respons aksi antrean tidak valid.' };
   }
-
-  const fallbackUrl = apiUrl.replace(/\/verify\/?$/, '/queues');
-  try {
-    const resp = await fetch(fallbackUrl);
-    if (resp.ok) {
-      const data = (await resp.json()) as { queues?: PoliQueueSnapshot[] };
-      if (Array.isArray(data.queues) && data.queues.length > 0) {
-        return data.queues;
-      }
-    }
-  } catch {
-    /* abaikan */
-  }
-
-  return DEFAULT_POLI_QUEUES;
+  const data = result.data as Partial<QueueActionResponse> & QueueStateResponse;
+  return {
+    ok: true,
+    data: {
+      ...data,
+      status: data.status ?? 'QUEUE_ADVANCED',
+      action: data.action ?? action,
+      changed: data.changed ?? true,
+      message: data.message ?? '',
+    },
+  };
 }
 
 export async function fetchHospitalAnalytics(
@@ -978,96 +1116,6 @@ export async function fetchHospitalAnalytics(
       return null;
     }
     return (await resp.json()) as HospitalAnalyticsData;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Memanggil atau memajukan nomor antrean poliklinik melalui POST /queue/action (atau POST /queues/advance).
- */
-export async function advancePoliQueue(
-  poliklinik: string,
-  queueAction: QueueControlAction = 'call_next',
-): Promise<{
-  readonly queue?: PoliQueueSnapshot;
-  readonly queues: readonly PoliQueueSnapshot[];
-} | null> {
-  const apiUrl = import.meta.env.VITE_API_URL;
-  if (!apiUrl) {
-    return null;
-  }
-
-  const payload = JSON.stringify({
-    action: queueAction,
-    poliklinik,
-    queueAction,
-  });
-
-  // 1. Coba endpoint POST /queue/action
-  const actionUrl = apiUrl.replace(/\/verify\/?$/, '/queue/action');
-  try {
-    const resp = await fetch(actionUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-    });
-    if (resp.ok) {
-      const data = (await resp.json()) as {
-        queue?: PoliQueueSnapshot;
-        queues?: PoliQueueSnapshot[];
-      };
-      if (Array.isArray(data.queues)) {
-        return { queue: data.queue, queues: data.queues };
-      }
-    }
-  } catch {
-    /* coba fallback */
-  }
-
-  // 2. Fallback ke POST /queues/advance atau base verify URL
-  const fallbackUrl = apiUrl.replace(/\/verify\/?$/, '/queues/advance');
-  try {
-    const resp = await fetch(fallbackUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'advance_queue',
-        poliklinik,
-        queueAction,
-      }),
-    });
-    if (resp.ok) {
-      const data = (await resp.json()) as {
-        queue?: PoliQueueSnapshot;
-        queues?: PoliQueueSnapshot[];
-      };
-      if (Array.isArray(data.queues)) {
-        return { queue: data.queue, queues: data.queues };
-      }
-    }
-  } catch {
-    /* coba verify endpoint */
-  }
-
-  try {
-    const resp = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'advance_queue',
-        poliklinik,
-        queueAction,
-      }),
-    });
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as {
-      queue?: PoliQueueSnapshot;
-      queues?: PoliQueueSnapshot[];
-    };
-    return Array.isArray(data.queues)
-      ? { queue: data.queue, queues: data.queues }
-      : null;
   } catch {
     return null;
   }

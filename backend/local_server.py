@@ -131,6 +131,26 @@ def _load_subjects_map() -> dict[str, dict[str, Any]]:
         return {}
 
 
+def _canonical_id_of(subjects_map: dict[str, dict[str, Any]], person_id: str) -> str:
+    """ID profil rekam medis utama untuk sebuah sampel wajah (alias -> RM utama)."""
+    info = subjects_map.get(person_id) or {}
+    canonical = str(info.get("canonical_person_id") or "").strip()
+    return canonical if canonical and canonical in subjects_map else person_id
+
+
+def _canonical_subjects(
+    subjects_map: dict[str, dict[str, Any]],
+) -> list[tuple[dict[str, Any], list[str]]]:
+    """Daftar profil pasien unik beserta seluruh ID sampel wajah yang tertaut."""
+    linked: dict[str, list[str]] = {}
+    for pid in subjects_map:
+        linked.setdefault(_canonical_id_of(subjects_map, pid), []).append(pid)
+    return [
+        (subjects_map[cid], sorted(set(face_ids), key=lambda x: (x != cid, x)))
+        for cid, face_ids in linked.items()
+    ]
+
+
 def _format_gender(gender_val: str) -> str:
     if gender_val in ("L", "Laki-laki"):
         return "Laki-laki"
@@ -449,11 +469,10 @@ LAST_CUSTOM_ENROLLED_ID: str | None = None
 
 def _build_face_match_from_subject(person_id: str, similarity: float) -> dict[str, Any]:
     subjects_map = _load_subjects_map()
-    info = subjects_map.get(person_id, {})
-    canonical_id = info.get("canonical_person_id")
-    if canonical_id and canonical_id in subjects_map:
-        info = subjects_map[canonical_id]
-        person_id = canonical_id
+    matched_face_id = person_id
+    canonical_id = _canonical_id_of(subjects_map, person_id)
+    info = subjects_map.get(canonical_id, {})
+    person_id = canonical_id
     full_name = info.get("full_name") or person_id
     gender = _format_gender(info.get("gender_label") or info.get("gender") or "")
     no_rm = info.get("no_rm") or info.get("nim") or person_id
@@ -466,8 +485,10 @@ def _build_face_match_from_subject(person_id: str, similarity: float) -> dict[st
     return {
         "Similarity": similarity,
         "Face": {
-            "FaceId": f"face-{person_id.lower()}",
-            "ExternalImageId": person_id,
+            "FaceId": f"face-{matched_face_id.lower()}",
+            # ExternalImageId = sampel wajah yang cocok; CanonicalPersonId = profil RM utama
+            "ExternalImageId": matched_face_id,
+            "CanonicalPersonId": person_id,
             "NoRm": no_rm,
             "Nim": no_rm,
             "Nik": info.get("nik") or "3273011405950001",
@@ -806,6 +827,14 @@ def _configure_local_handler() -> None:
                 best_person_id = base_person_id
 
         if best_person_id and best_score >= FaceMatchThreshold:
+            # Sampel wajah tanpa profil rekam medis (file yatim di folder enrolled)
+            # tidak boleh menghasilkan identitas palsu: anggap tidak dikenali.
+            if best_person_id not in _load_subjects_map():
+                logger.warning(
+                    "Wajah cocok dengan sampel tanpa profil pasien (%s); ditolak.",
+                    best_person_id,
+                )
+                return {"FaceMatches": []}
             return {
                 "FaceMatches": [
                     _build_face_match_from_subject(best_person_id, best_score)
@@ -921,34 +950,22 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if clean_path in ("/v1/attendance/queues", "/queues", "/v1/attendance/queue", "/queue"):
+        if clean_path in (
+            "/api/queue",
+            "/api/queues",
+            "/v1/attendance/queues",
+            "/queues",
+            "/v1/attendance/queue",
+            "/queue",
+        ):
             poli_param = (query_params.get("poliklinik") or query_params.get("poli") or [None])[0]
             prefix_param = (query_params.get("prefix") or [None])[0]
-            all_queues = handler.get_all_queues_status()
-            target_queue = None
-            if poli_param:
-                target_queue = handler.get_poli_queue_status(poli_param)
-            elif prefix_param:
-                for q in all_queues:
-                    if q.get("prefix", "").upper() == prefix_param.upper():
-                        target_queue = q
-                        break
-            if not target_queue and all_queues:
-                target_queue = all_queues[0]
-
+            status_code, body = handler.build_queue_state(poli_param, prefix_param)
             self._send_lambda_response(
                 {
-                    "statusCode": 200,
+                    "statusCode": status_code,
                     "headers": handler.CORS_HEADERS,
-                    "body": json.dumps(
-                        {
-                            "success": True,
-                            "count": len(all_queues),
-                            "queues": all_queues,
-                            "queue": target_queue,
-                            "updatedAt": datetime.now(timezone.utc).isoformat(),
-                        }
-                    ),
+                    "body": json.dumps(body),
                 }
             )
             return
@@ -983,7 +1000,8 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
                         {
                             "database": db_diag,
                             "evaluation": eval_report,
-                            "totalRegisteredPatients": len(subjects_map),
+                            "totalRegisteredPatients": len(_canonical_subjects(subjects_map)),
+                            "totalFaceSamples": len(subjects_map),
                             "totalAttendanceLogs": len(logs),
                             "recentLogs": logs[:50],
                             "queues": handler.get_all_queues_status(),
@@ -1017,11 +1035,15 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
 
         if clean_path == "/v1/attendance/faces":
             subjects_map = _load_subjects_map()
+            # Satu baris per profil rekam medis; sampel wajah alias (mis. 2702385671,
+            # MHS-WEBCAM-USER) ditampilkan sebagai linkedFaceIds, bukan pasien terpisah.
             faces_list = [
                 {
                     "personId": s["person_id"],
-                    "canonicalPersonId": s.get("canonical_person_id") or s["person_id"],
+                    "canonicalPersonId": s["person_id"],
+                    "linkedFaceIds": linked_ids,
                     "noRm": s.get("no_rm") or s.get("nim") or s["person_id"],
+                    "rmNumber": s.get("no_rm") or s.get("nim") or s["person_id"],
                     "nik": s.get("nik", "-"),
                     "fullName": s.get("full_name", s["person_id"]),
                     "birthDate": s.get("birth_date") or s.get("birthDate") or "-",
@@ -1034,11 +1056,12 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
                     "allergies": s.get("allergies", "Tidak Ada Alergi"),
                     "chronicConditions": s.get("chronic_conditions", "Tidak Ada"),
                     "poliklinik": s.get("poliklinik", "Poli Umum"),
+                    "defaultPoli": s.get("default_poli") or s.get("poliklinik", "Poli Umum"),
                     "dokter": s.get("dokter", "dr. Sinta Maharani"),
                     "medicalNotes": s.get("medical_notes") or s.get("medicalNotes") or "-",
                     "medicalHistory": s.get("medical_history", []),
                 }
-                for s in reversed(list(subjects_map.values()))
+                for s, linked_ids in reversed(_canonical_subjects(subjects_map))
             ]
             self._send_lambda_response(
                 {
@@ -1061,6 +1084,8 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
                         "lookup_endpoint": "POST /v1/attendance/lookup",
                         "medical_record_endpoint": "POST /v1/attendance/medical-record",
                         "queue_action_endpoint": "POST /v1/attendance/queue/action",
+                        "api_queue_endpoint": "GET /api/queue",
+                        "api_queue_action_endpoint": "POST /api/queue/action {action: NEXT|FINISH|RECALL|RESET, poliklinik}",
                         "analytics_endpoint": "GET /v1/attendance/analytics",
                         "queues_endpoint": "GET /v1/attendance/queues",
                         "queue_endpoint": "GET /v1/attendance/queue",
@@ -1108,26 +1133,16 @@ class LocalLambdaRequestHandler(BaseHTTPRequestHandler):
         if (
             clean_path.endswith("/queue/action")
             or clean_path.endswith("/queues/advance")
-            or action in ("advance_queue", "queue_action", "call_next", "complete", "recall", "reset")
+            or action in handler.QUEUE_ACTION_ALIASES
             or "queueAction" in parsed_body
         ):
-            poli_name = str(parsed_body.get("poliklinik") or "Poli Penyakit Dalam").strip()
-            queue_action = str(parsed_body.get("queueAction") or action or "call_next").strip().lower()
-            updated_queue = handler.advance_poli_queue(poli_name, queue_action=queue_action)
+            # Satu sumber kebenaran: mesin antrean di handler (thread-safe)
+            status_code, body = handler.handle_queue_action(parsed_body)
             self._send_lambda_response(
                 {
-                    "statusCode": 200,
+                    "statusCode": status_code,
                     "headers": handler.CORS_HEADERS,
-                    "body": json.dumps(
-                        {
-                            "success": True,
-                            "status": "QUEUE_ADVANCED",
-                            "action": queue_action,
-                            "queue": updated_queue,
-                            "queues": handler.get_all_queues_status(),
-                            "updatedAt": datetime.now(timezone.utc).isoformat(),
-                        }
-                    ),
+                    "body": json.dumps(body),
                 }
             )
             return

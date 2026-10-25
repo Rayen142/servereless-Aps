@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
   useAttendanceVerification,
   type MedicalHistoryItem,
@@ -10,11 +10,11 @@ import { useWebCamera } from '../hooks/useWebCamera';
 import { captureVideoFrame } from '../lib/video';
 import {
   addMedicalRecord,
-  advancePoliQueue,
   DEFAULT_POLI_QUEUES,
-  fetchPoliQueues,
+  fetchQueueState,
   hasRealAllergy,
   POLIKLINIK_LIST,
+  sendQueueAction,
   speakQueueCall,
   type PoliQueueSnapshot,
   type QueueControlAction,
@@ -1494,6 +1494,94 @@ function PatientDetails({
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Status Sinkronisasi Antrean (polling GET /api/queue)                       */
+/* -------------------------------------------------------------------------- */
+
+const QUEUE_POLL_INTERVAL_MS = 3500;
+
+type QueueSyncStatus = 'connecting' | 'live' | 'offline';
+
+interface QueueSyncState {
+  readonly status: QueueSyncStatus;
+  readonly lastSyncedAt: string | null;
+  readonly error: string | null;
+}
+
+interface QueueNotice {
+  readonly tone: 'info' | 'error';
+  readonly text: string;
+}
+
+function QueueSyncBar({
+  sync,
+  notice,
+  onDismissNotice,
+}: {
+  readonly sync: QueueSyncState;
+  readonly notice: QueueNotice | null;
+  readonly onDismissNotice: () => void;
+}) {
+  const syncedTime = sync.lastSyncedAt
+    ? new Date(sync.lastSyncedAt).toLocaleTimeString('id-ID')
+    : null;
+  const dotClass =
+    sync.status === 'live'
+      ? 'bg-emerald-500'
+      : sync.status === 'connecting'
+        ? 'bg-amber-400'
+        : 'bg-rose-500';
+  const label =
+    sync.status === 'live'
+      ? `Antrean real-time tersinkron${syncedTime ? ` · diperbarui ${syncedTime}` : ''}`
+      : sync.status === 'connecting'
+        ? 'Menghubungkan ke server antrean…'
+        : `Server antrean tidak terjangkau${sync.error ? ` (${sync.error})` : ''} · ${
+            syncedTime ? `menampilkan data terakhir ${syncedTime}` : 'menampilkan data contoh'
+          }`;
+
+  return (
+    <div className="no-print mb-3 flex flex-wrap items-center gap-2 text-[11px]">
+      <span
+        id="queue-sync-status"
+        role="status"
+        aria-live="polite"
+        className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200/80 bg-white px-2.5 py-1 text-neutral-600"
+      >
+        <span className="relative flex h-2 w-2">
+          {sync.status === 'live' && (
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+          )}
+          <span className={`relative inline-flex h-2 w-2 rounded-full ${dotClass}`} />
+        </span>
+        {label}
+      </span>
+      {notice && (
+        <span
+          id="queue-action-notice"
+          role={notice.tone === 'error' ? 'alert' : 'status'}
+          className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 ${
+            notice.tone === 'error'
+              ? 'border border-rose-200 bg-rose-50 text-rose-700'
+              : 'border border-sky-200 bg-sky-50 text-sky-700'
+          }`}
+        >
+          {notice.text}
+          <button
+            type="button"
+            id="queue-action-notice-dismiss"
+            onClick={onDismissNotice}
+            className="font-semibold opacity-70 transition hover:opacity-100"
+            aria-label="Tutup notifikasi antrean"
+          >
+            ×
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Komponen Utama Pemindai & Antrean                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -1516,6 +1604,18 @@ function AttendanceCamera({
   const [monitorPoli, setMonitorPoli] = useState<string>('Poli Penyakit Dalam');
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [lastSpokenText, setLastSpokenText] = useState<string | null>(null);
+  const [queueSync, setQueueSync] = useState<QueueSyncState>({
+    status: 'connecting',
+    lastSyncedAt: null,
+    error: null,
+  });
+  const [queueNotice, setQueueNotice] = useState<QueueNotice | null>(null);
+
+  // Nomor urut request antrean: respons yang lebih lama dari state terakhir yang
+  // diterapkan dibuang, sehingga hasil polling lama tidak menimpa hasil aksi petugas.
+  const queueRequestSeqRef = useRef(0);
+  const appliedQueueSeqRef = useRef(0);
+  const pollInFlightRef = useRef(false);
 
   // State Pencarian Manual Fallback (NIK / No. RM / Nama)
   const [showManualSearch, setShowManualSearch] = useState(false);
@@ -1525,17 +1625,69 @@ function AttendanceCamera({
     enabled: roleMode !== 'tv' && frame.image === null,
   });
 
-  const refreshQueues = useCallback(async () => {
-    const data = await fetchPoliQueues();
-    setQueues(data);
-  }, []);
+  const applyQueueSnapshot = useCallback(
+    (
+      seq: number,
+      nextQueues: readonly PoliQueueSnapshot[],
+      updatedAt: string | undefined,
+    ): boolean => {
+      if (seq < appliedQueueSeqRef.current) return false;
+      appliedQueueSeqRef.current = seq;
+      if (nextQueues.length > 0) {
+        setQueues(nextQueues);
+      }
+      setQueueSync({
+        status: 'live',
+        lastSyncedAt: updatedAt ?? new Date().toISOString(),
+        error: null,
+      });
+      return true;
+    },
+    [],
+  );
+
+  /**
+   * GET /api/queue. Polling latar (background) dilewati bila masih ada polling
+   * yang berjalan; refresh eksplisit (setelah verifikasi) selalu dijalankan.
+   */
+  const refreshQueues = useCallback(
+    async (options: { readonly background?: boolean } = {}) => {
+      const isBackground = options.background === true;
+      if (isBackground) {
+        if (pollInFlightRef.current) return;
+        pollInFlightRef.current = true;
+      }
+      const seq = ++queueRequestSeqRef.current;
+      try {
+        const result = await fetchQueueState();
+        if (result.ok) {
+          applyQueueSnapshot(seq, result.data.queues, result.data.updatedAt);
+        } else if (seq >= appliedQueueSeqRef.current) {
+          // Data terakhir tetap ditampilkan; hanya status koneksi yang berubah.
+          setQueueSync((prev) => ({ ...prev, status: 'offline', error: result.error }));
+        }
+      } finally {
+        if (isBackground) pollInFlightRef.current = false;
+      }
+    },
+    [applyQueueSnapshot],
+  );
 
   useEffect(() => {
-    void refreshQueues();
-    const id = window.setInterval(() => {
-      void refreshQueues();
-    }, 3500);
-    return () => window.clearInterval(id);
+    const poll = () => {
+      if (document.hidden) return; // hemat jaringan saat tab tidak terlihat
+      void refreshQueues({ background: true });
+    };
+    const handleVisibility = () => {
+      if (!document.hidden) void refreshQueues({ background: true });
+    };
+    poll();
+    const id = window.setInterval(poll, QUEUE_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [refreshQueues]);
 
   const issueTicket = async (image: string) => {
@@ -1623,39 +1775,65 @@ function AttendanceCamera({
     queues[0] ??
     DEFAULT_POLI_QUEUES[0];
 
+  /**
+   * Aksi panel petugas → POST /api/queue/action.
+   * 'call_next' = NEXT (Panggil Berikutnya), 'complete' = FINISH (Selesai).
+   */
   const handleQueueAction = async (
     targetPoli: string,
     action: QueueControlAction,
   ) => {
     setIsAdvancing(true);
-    const result = await advancePoliQueue(targetPoli, action);
-    const updatedQueues = result?.queues ?? queues;
-    if (result?.queues) {
-      setQueues(result.queues);
-    } else {
-      await refreshQueues();
-    }
+    setQueueNotice(null);
+    try {
+      const seq = ++queueRequestSeqRef.current;
+      const result = await sendQueueAction(targetPoli, action);
+      if (!result.ok) {
+        setQueueNotice({ tone: 'error', text: `Aksi antrean gagal: ${result.error}` });
+        return;
+      }
 
-    const targetSnapshot =
-      result?.queue ??
-      updatedQueues.find((q) => q.poliklinik === targetPoli) ??
-      activePoliQueue;
+      const { data } = result;
+      applyQueueSnapshot(seq, data.queues, data.updatedAt);
 
-    if (action === 'call_next' || action === 'recall') {
-      const matchedPatientName =
-        patient?.queueTicket?.queueNumber === targetSnapshot.currentServingNumber
-          ? patient.fullName
-          : targetSnapshot.currentPatientName;
+      if (!data.changed) {
+        setQueueNotice({
+          tone: 'info',
+          text: data.message || 'Tidak ada perubahan pada antrean.',
+        });
+        return;
+      }
 
-      const sentence = await speakQueueCall({
-        queueNumber: targetSnapshot.currentServingNumber,
-        patientName: matchedPatientName,
-        poliklinik: targetSnapshot.poliklinik,
-        room: targetSnapshot.room,
+      const targetSnapshot =
+        data.queue ??
+        data.queues.find((q) => q.poliklinik === targetPoli) ??
+        activePoliQueue;
+
+      if (action === 'call_next' || action === 'recall') {
+        const matchedPatientName =
+          patient?.queueTicket?.queueNumber === targetSnapshot.currentServingNumber
+            ? patient.fullName
+            : targetSnapshot.currentPatientName;
+
+        const sentence = await speakQueueCall({
+          queueNumber: targetSnapshot.currentServingNumber,
+          patientName: matchedPatientName,
+          poliklinik: targetSnapshot.poliklinik,
+          room: targetSnapshot.room,
+        });
+        setLastSpokenText(sentence);
+      }
+    } catch (err) {
+      setQueueNotice({
+        tone: 'error',
+        text:
+          err instanceof Error
+            ? `Aksi antrean gagal: ${err.message}`
+            : 'Aksi antrean gagal diproses.',
       });
-      setLastSpokenText(sentence);
+    } finally {
+      setIsAdvancing(false);
     }
-    setIsAdvancing(false);
   };
 
   const handleNext = () => {
@@ -1750,6 +1928,12 @@ function AttendanceCamera({
         </div>
       </div>
       )}
+
+      <QueueSyncBar
+        sync={queueSync}
+        notice={queueNotice}
+        onDismissNotice={() => setQueueNotice(null)}
+      />
 
       {roleMode === 'tv' ? (
         <WaitingRoomTvDisplay
