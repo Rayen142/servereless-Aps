@@ -39,6 +39,10 @@ import {
   type NetworkEstimate,
 } from './EvaluationScientificPanels';
 import {
+  BiometricStressTestPanel,
+  BiometricXaiInspectorCard,
+} from './BiometricXaiAndStressPanel';
+import {
   AlertIcon,
   CheckIcon,
   DownloadIcon,
@@ -622,6 +626,12 @@ function EvaluationDashboardPage() {
           />
         </>
       )}
+
+      {/* 5. Visualisasi Tahapan Ekstraksi Fitur Wajah (Explainable AI / XAI Inspector) */}
+      <BiometricXaiInspectorCard />
+
+      {/* 6. Simulasi Uji Ketahanan Pencahayaan & Blur (Tanpa CLAHE vs Dengan CLAHE) */}
+      <BiometricStressTestPanel operationalThreshold={operationalThreshold} />
 
       {/* Diagnostik Database Lokal SQLite */}
       {data?.database && (

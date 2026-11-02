@@ -30,6 +30,8 @@ import {
   buildSatusehatFhirBundle,
   downloadSatusehatFhirJson,
 } from '../lib/satusehat';
+import { evaluateClinicalPriority } from '../lib/biometricXaiEngine';
+import { BiometricXaiInspectorCard } from './BiometricXaiAndStressPanel';
 import {
   AlertIcon,
   CheckIcon,
@@ -164,7 +166,21 @@ function ThermalPrintReceipt({
     livePoliQueue?.currentServingSequence ?? ticket.currentServingSequence;
   const currentServingNumber =
     livePoliQueue?.currentServingNumber ?? ticket.currentServingNumber;
-  const patientsAhead = Math.max(0, ticket.queueSequence - currentServingSeq);
+  const clinicalPriority = evaluateClinicalPriority({
+    age: patient.age,
+    birthDate: patient.birthDate,
+    chronicConditions: patient.chronicConditions,
+  });
+  const isPriority = ticket.isPriority ?? clinicalPriority.isPriority;
+  const priorityReason =
+    ticket.priorityReason || clinicalPriority.priorityReason;
+  const rawAhead = Math.max(0, ticket.queueSequence - currentServingSeq);
+  const fastTrackSaved =
+    isPriority && rawAhead >= 2
+      ? ticket.fastTrackSavedPatients ||
+        Math.min(rawAhead - 1, Math.max(1, Math.floor(rawAhead / 2)))
+      : 0;
+  const patientsAhead = Math.max(0, rawAhead - fastTrackSaved);
   const qrPayload = `SIMRS|${ticket.ticketId}|${ticket.queueNumber}|${patient.noRm}`;
   const issuedDate = new Date(ticket.issuedAt || Date.now());
   const formattedTime = issuedDate.toLocaleString('id-ID', {
@@ -190,6 +206,20 @@ function ThermalPrintReceipt({
         <div style={{ fontSize: '34px', fontWeight: 800, lineHeight: 1.15, margin: '4px 0' }}>
           {ticket.queueNumber}
         </div>
+        {isPriority && (
+          <div
+            style={{
+              margin: '3px auto 4px',
+              padding: '2px 6px',
+              border: '1px solid #000',
+              fontSize: '8.5px',
+              fontWeight: 700,
+              display: 'inline-block',
+            }}
+          >
+            ★ PRIORITAS FAST-TRACK ({priorityReason}) ★
+          </div>
+        )}
         <div style={{ fontSize: '10px', fontWeight: 700 }}>{ticket.poliklinik}</div>
         <div style={{ fontSize: '9px' }}>{ticket.room}</div>
         <div style={{ fontSize: '9px' }}>{ticket.dokter}</div>
@@ -896,6 +926,7 @@ function QueueTicketCard({
   isAdvancing,
   onNext,
   allowStaffControls,
+  capturedImage,
 }: {
   readonly patient: RecognizedPerson;
   readonly livePoliQueue?: PoliQueueSnapshot;
@@ -903,7 +934,9 @@ function QueueTicketCard({
   readonly isAdvancing: boolean;
   readonly onNext: () => void;
   readonly allowStaffControls: boolean;
+  readonly capturedImage?: string | null;
 }) {
+  const [showXaiInspector, setShowXaiInspector] = useState(false);
   const ticket = patient.queueTicket;
   if (!ticket) {
     return null;
@@ -915,7 +948,22 @@ function QueueTicketCard({
     livePoliQueue?.currentServingNumber ?? ticket.currentServingNumber;
   const servingStatus = livePoliQueue?.servingStatus ?? 'DIPANGGIL';
 
-  const patientsAhead = Math.max(0, ticket.queueSequence - currentServingSeq);
+  const clinicalPriority = evaluateClinicalPriority({
+    age: patient.age,
+    birthDate: patient.birthDate,
+    chronicConditions: patient.chronicConditions,
+  });
+  const isPriority = ticket.isPriority ?? clinicalPriority.isPriority;
+  const priorityReason =
+    ticket.priorityReason || clinicalPriority.priorityReason;
+
+  const rawAhead = Math.max(0, ticket.queueSequence - currentServingSeq);
+  const fastTrackSaved =
+    isPriority && rawAhead >= 2
+      ? ticket.fastTrackSavedPatients ||
+        Math.min(rawAhead - 1, Math.max(1, Math.floor(rawAhead / 2)))
+      : 0;
+  const patientsAhead = Math.max(0, rawAhead - fastTrackSaved);
   const estimatedWaitMinutes = patientsAhead * 8;
   const isTurnNow = patientsAhead === 0;
   const isCompleted = isTurnNow && servingStatus === 'SELESAI';
@@ -931,6 +979,24 @@ function QueueTicketCard({
 
   return (
     <div className="no-print rounded-2xl border border-neutral-200/80 bg-white p-5">
+      {isPriority && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50/85 px-3.5 py-2.5 text-xs text-rose-950">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-5 items-center rounded-full bg-rose-600 px-2 font-mono text-[10px] font-bold tracking-wide text-white">
+              ★ PRIORITAS FAST-TRACK
+            </span>
+            <span className="font-semibold text-rose-900">
+              Triase Klinis Otomatis: {priorityReason}
+            </span>
+          </div>
+          <span className="font-mono text-[11px] font-medium text-rose-700">
+            {fastTrackSaved > 0
+              ? `Didahulukan ${fastTrackSaved} antrean (Hemat ±${fastTrackSaved * 8} mnt)`
+              : 'Jalur Layanan Prioritas Medis'}
+          </span>
+        </div>
+      )}
+
       {isDuplicateScan && (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 text-xs text-amber-900">
           <p className="font-semibold">
@@ -1030,12 +1096,37 @@ function QueueTicketCard({
 
         <button
           type="button"
+          onClick={() => setShowXaiInspector((v) => !v)}
+          className={`inline-flex items-center justify-center gap-1.5 rounded-full border px-3.5 py-2 text-xs font-medium transition ${
+            showXaiInspector
+              ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+              : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
+          }`}
+        >
+          <ScanIcon width={13} height={13} />
+          {showXaiInspector ? 'Tutup XAI Wajah' : 'Bedah Fitur Wajah (XAI)'}
+        </button>
+
+        <button
+          type="button"
           onClick={onNext}
           className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-600 transition hover:bg-neutral-50"
         >
           Pasien Berikutnya
         </button>
       </div>
+
+      {showXaiInspector && (
+        <div className="mt-4 border-t border-neutral-100 pt-4">
+          <BiometricXaiInspectorCard
+            liveImageSrc={capturedImage}
+            livePatientName={patient.fullName}
+            liveNoRm={patient.noRm}
+            liveSimilarity={patient.similarity}
+            compact
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -2108,6 +2199,7 @@ function AttendanceCamera({
                     isAdvancing={isAdvancing}
                     onNext={handleNext}
                     allowStaffControls={allowStaffControls}
+                    capturedImage={frame.image}
                   />
                   <PatientDetails
                     patient={patient}

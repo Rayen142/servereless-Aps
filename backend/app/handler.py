@@ -627,6 +627,41 @@ def _match_threshold() -> float:
     return threshold
 
 
+def _evaluate_clinical_priority(patient: dict[str, Any]) -> dict[str, Any]:
+    """Evaluasi triase klinis otomatis (Smart Clinical Triage / Fast-Track) berdasarkan usia dan komorbiditas."""
+    reasons: list[str] = []
+    try:
+        age = int(patient.get("age") or 30)
+    except (TypeError, ValueError):
+        age = 30
+
+    if age >= 60:
+        reasons.append(f"Lansia ({age} Th)")
+
+    chronic = str(patient.get("chronicConditions") or "").strip()
+    notes = str(patient.get("medicalNotes") or "").strip()
+    combined = f"{chronic} {notes}".lower()
+
+    high_risk_rules = [
+        (("jantung", "koroner", "aritmia", "angina", "nyeri dada"), "Komorbid Kardiovaskular"),
+        (("asma", "ppok", "sesak", "bronkospasme", "paru obstruktif"), "Risiko Respirasi Akut"),
+        (("stroke", "kejang", "epilepsi", "vertigo akut", "parese"), "Risiko Neurologis"),
+        (("hipertensi grade ii", "diabetes melitus", "gagal ginjal"), "Komorbid Kronis Risiko Tinggi"),
+        (("hamil", "ibu hamil", "disabilitas", "kursi roda"), "Prioritas Rentan / Aksesibilitas"),
+    ]
+    for keywords, label in high_risk_rules:
+        if any(kw in combined for kw in keywords):
+            reasons.append(label)
+            break
+
+    is_priority = len(reasons) > 0
+    return {
+        "isPriority": is_priority,
+        "priorityLevel": "PRIORITAS" if is_priority else "REGULER",
+        "priorityReason": " + ".join(reasons) if is_priority else "Antrean Reguler Standar",
+    }
+
+
 def _refresh_existing_ticket(existing: dict[str, Any]) -> dict[str, Any]:
     """Perbarui informasi antrean dinamis pada tiket aktif milik pasien tanpa menerbitkan nomor baru."""
     poli_name = str(existing.get("poliklinik") or "Poli Umum")
@@ -642,7 +677,10 @@ def _refresh_existing_ticket(existing: dict[str, Any]) -> dict[str, Any]:
     seq = int(existing.get("queueSequence") or 1)
     serving_seq = _serving_counter.get(prefix, 1)
     issued_seq = _queue_counter.get(prefix, seq)
-    patients_ahead = max(0, seq - serving_seq)
+    raw_ahead = max(0, seq - serving_seq)
+    is_priority = bool(existing.get("isPriority"))
+    patients_ahead = min(raw_ahead, 1) if is_priority else raw_ahead
+    fast_track_saved = max(0, raw_ahead - patients_ahead)
     estimated_wait_minutes = patients_ahead * MINUTES_PER_PATIENT
 
     return {
@@ -651,6 +689,7 @@ def _refresh_existing_ticket(existing: dict[str, Any]) -> dict[str, Any]:
         "currentServingSequence": serving_seq,
         "latestQueueNumber": f"{prefix}-{issued_seq:03d}",
         "patientsAhead": patients_ahead,
+        "fastTrackSavedPatients": fast_track_saved,
         "estimatedWaitMinutes": estimated_wait_minutes,
         "status": "DIPANGGIL" if patients_ahead == 0 else "MENUNGGU",
         "isExistingTicket": True,
@@ -741,9 +780,13 @@ def _generate_queue_ticket_unlocked(
         "noRm": no_rm,
     }
 
+    triage = _evaluate_clinical_priority(patient)
+    is_priority = bool(triage["isPriority"])
     queue_number = f"{prefix}-{seq:03d}"
     current_serving_number = f"{prefix}-{serving_seq:03d}"
-    patients_ahead = max(0, seq - serving_seq)
+    raw_ahead = max(0, seq - serving_seq)
+    patients_ahead = min(raw_ahead, 1) if is_priority else raw_ahead
+    fast_track_saved = max(0, raw_ahead - patients_ahead)
     estimated_wait_minutes = patients_ahead * MINUTES_PER_PATIENT
 
     allergies = str(patient.get("allergies") or "Tidak Ada Alergi")
@@ -760,16 +803,21 @@ def _generate_queue_ticket_unlocked(
         "currentServingSequence": serving_seq,
         "latestQueueNumber": queue_number,
         "patientsAhead": patients_ahead,
+        "fastTrackSavedPatients": fast_track_saved,
         "estimatedWaitMinutes": estimated_wait_minutes,
         "noRm": no_rm,
         "fullName": full_name,
         "gender": patient.get("gender"),
+        "age": int(patient.get("age") or 30),
         "insurance": patient.get("insurance") or "BPJS Kesehatan",
         "poliklinik": poli_name,
         "dokter": poli_info["dokter"],
         "room": poli_info["room"],
         "allergies": allergies,
         "hasAllergyAlert": has_allergy,
+        "isPriority": is_priority,
+        "priorityLevel": triage["priorityLevel"],
+        "priorityReason": triage["priorityReason"],
         "status": "DIPANGGIL" if patients_ahead == 0 else "MENUNGGU",
         "issuedAt": now_iso,
         "isExistingTicket": False,

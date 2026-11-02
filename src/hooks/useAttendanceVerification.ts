@@ -29,6 +29,10 @@ export interface QueueTicket {
   readonly status: string;
   readonly issuedAt: string;
   readonly isExistingTicket?: boolean;
+  readonly isPriority?: boolean;
+  readonly priorityLevel?: 'PRIORITAS' | 'REGULER';
+  readonly priorityReason?: string;
+  readonly fastTrackSavedPatients?: number;
 }
 
 export interface RecognizedPerson {
@@ -199,6 +203,15 @@ const parseQueueTicket = (raw: unknown): QueueTicket | undefined => {
       typeof t.status === 'string' ? t.status : 'MENUNGGU PANGGILAN POLI',
     issuedAt: typeof t.issuedAt === 'string' ? t.issuedAt : '',
     isExistingTicket: t.isExistingTicket === true,
+    isPriority: t.isPriority === true,
+    priorityLevel:
+      t.priorityLevel === 'PRIORITAS' ? 'PRIORITAS' : 'REGULER',
+    priorityReason:
+      typeof t.priorityReason === 'string' ? t.priorityReason : undefined,
+    fastTrackSavedPatients:
+      typeof t.fastTrackSavedPatients === 'number'
+        ? t.fastTrackSavedPatients
+        : undefined,
   };
 };
 
