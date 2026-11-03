@@ -1,7 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
   useAttendanceVerification,
-  type MedicalHistoryItem,
   type RecognizedPerson,
 } from '../hooks/useAttendanceVerification';
 import { useFaceDetection } from '../hooks/useFaceDetection';
@@ -9,11 +8,10 @@ import { useFrameCapture } from '../hooks/useFrameCapture';
 import { useWebCamera } from '../hooks/useWebCamera';
 import { captureVideoFrame } from '../lib/video';
 import {
-  addMedicalRecord,
   DEFAULT_POLI_QUEUES,
   fetchQueueState,
-  hasRealAllergy,
   POLIKLINIK_LIST,
+  resolveApiEndpoint,
   sendQueueAction,
   speakQueueCall,
   type PoliQueueSnapshot,
@@ -21,263 +19,25 @@ import {
 } from '../lib/hospital';
 import CameraView from './CameraView';
 import {
-  formatIcd10Diagnosis,
-  parseIcd10FromText,
-  searchIcd10Catalog,
-  type Icd10Entry,
-} from '../lib/icd10';
-import {
-  buildSatusehatFhirBundle,
-  downloadSatusehatFhirJson,
-} from '../lib/satusehat';
-import { evaluateClinicalPriority } from '../lib/biometricXaiEngine';
-import { BiometricXaiInspectorCard } from './BiometricXaiAndStressPanel';
-import {
-  AlertIcon,
   CheckIcon,
   ChevronRightIcon,
-  ClockIcon,
-  DownloadIcon,
   FileTextIcon,
-  HospitalIcon,
-  PlusIcon,
-  PrinterIcon,
   RefreshIcon,
   ScanIcon,
-  SearchIcon,
   ShieldCheckIcon,
-  StethoscopeIcon,
-  TvIcon,
+  UserPlusIcon,
   VolumeIcon,
 } from './icons';
 
 const AUTO_POLI = 'auto';
-export type ViewRoleMode = 'kiosk' | 'doctor' | 'tv';
+const DEMO_BYPASS_RM = 'RM-2026-501B';
 
-/* -------------------------------------------------------------------------- */
-/*  Generator QR Code & Barcode SVG Deterministik untuk Struk Thermal         */
-/* -------------------------------------------------------------------------- */
-
-function hashString(input: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function ThermalQrCodeSvg({ value }: { readonly value: string }) {
-  const size = 21;
-  const cells: boolean[][] = Array.from({ length: size }, () =>
-    Array.from({ length: size }, () => false),
-  );
-
-  const drawFinder = (r0: number, c0: number) => {
-    for (let r = 0; r < 7; r++) {
-      for (let c = 0; c < 7; c++) {
-        const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
-        const isInner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-        cells[r0 + r]![c0 + c] = isBorder || isInner;
-      }
-    }
-  };
-
-  drawFinder(0, 0);
-  drawFinder(0, size - 7);
-  drawFinder(size - 7, 0);
-
-  let seed = hashString(value);
-  for (let r = 0; r < size; r++) {
-    for (let c = 0; c < size; c++) {
-      const inFinder =
-        (r < 8 && c < 8) ||
-        (r < 8 && c >= size - 8) ||
-        (r >= size - 8 && c < 8);
-      if (inFinder) continue;
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-      cells[r]![c] = (seed & 3) !== 0;
-    }
-  }
-
-  return (
-    <svg
-      viewBox={`0 0 ${size} ${size}`}
-      width="88"
-      height="88"
-      shapeRendering="crispEdges"
-      aria-label="QR Code Tiket Antrean"
-      className="mx-auto block"
-    >
-      {cells.map((row, r) =>
-        row.map((filled, c) =>
-          filled ? (
-            <rect key={`${r}-${c}`} x={c} y={r} width={1} height={1} fill="#000" />
-          ) : null,
-        ),
-      )}
-    </svg>
-  );
-}
-
-function ThermalBarcodeSvg({ value }: { readonly value: string }) {
-  const bars: { x: number; w: number }[] = [];
-  let x = 2;
-  let seed = hashString(value);
-  for (let i = 0; i < 34; i++) {
-    seed = (Math.imul(seed, 22695477) + 1) >>> 0;
-    const w = (seed % 3) + 1;
-    const gap = ((seed >>> 4) % 2) + 1;
-    bars.push({ x, w });
-    x += w + gap;
-  }
-
-  return (
-    <svg
-      viewBox={`0 0 ${x + 2} 28`}
-      width="180"
-      height="28"
-      shapeRendering="crispEdges"
-      aria-label="Barcode Tiket"
-      className="mx-auto block"
-    >
-      {bars.map((b, i) => (
-        <rect key={i} x={b.x} y={0} width={b.w} height={28} fill="#000" />
-      ))}
-    </svg>
-  );
+interface AttendanceCameraProps {
+  readonly onGoToRegister?: () => void;
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Struk Cetak Thermal 58mm/80mm (Hanya Tampil Saat @media print)            */
-/* -------------------------------------------------------------------------- */
-
-function ThermalPrintReceipt({
-  patient,
-  livePoliQueue,
-}: {
-  readonly patient: RecognizedPerson;
-  readonly livePoliQueue?: PoliQueueSnapshot;
-}) {
-  const ticket = patient.queueTicket;
-  if (!ticket) return null;
-
-  const currentServingSeq =
-    livePoliQueue?.currentServingSequence ?? ticket.currentServingSequence;
-  const currentServingNumber =
-    livePoliQueue?.currentServingNumber ?? ticket.currentServingNumber;
-  const clinicalPriority = evaluateClinicalPriority({
-    age: patient.age,
-    birthDate: patient.birthDate,
-    chronicConditions: patient.chronicConditions,
-  });
-  const isPriority = ticket.isPriority ?? clinicalPriority.isPriority;
-  const priorityReason =
-    ticket.priorityReason || clinicalPriority.priorityReason;
-  const rawAhead = Math.max(0, ticket.queueSequence - currentServingSeq);
-  const fastTrackSaved =
-    isPriority && rawAhead >= 2
-      ? ticket.fastTrackSavedPatients ||
-        Math.min(rawAhead - 1, Math.max(1, Math.floor(rawAhead / 2)))
-      : 0;
-  const patientsAhead = Math.max(0, rawAhead - fastTrackSaved);
-  const qrPayload = `SIMRS|${ticket.ticketId}|${ticket.queueNumber}|${patient.noRm}`;
-  const issuedDate = new Date(ticket.issuedAt || Date.now());
-  const formattedTime = issuedDate.toLocaleString('id-ID', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-  return (
-    <div id="thermal-print-receipt" aria-hidden="true">
-      <div style={{ textAlign: 'center', borderBottom: '1px dashed #000', paddingBottom: '6px' }}>
-        <div style={{ fontSize: '12px', fontWeight: 700 }}>RSUD SIMRS BIOMETRIK</div>
-        <div style={{ fontSize: '9px' }}>Instalasi Rawat Jalan Terpadu</div>
-        <div style={{ fontSize: '9px' }}>{formattedTime} WIB</div>
-      </div>
-
-      <div style={{ textAlign: 'center', padding: '10px 0', borderBottom: '1px dashed #000' }}>
-        <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-          Nomor Antrean Poliklinik
-        </div>
-        <div style={{ fontSize: '34px', fontWeight: 800, lineHeight: 1.15, margin: '4px 0' }}>
-          {ticket.queueNumber}
-        </div>
-        {isPriority && (
-          <div
-            style={{
-              margin: '3px auto 4px',
-              padding: '2px 6px',
-              border: '1px solid #000',
-              fontSize: '8.5px',
-              fontWeight: 700,
-              display: 'inline-block',
-            }}
-          >
-            ★ PRIORITAS FAST-TRACK ({priorityReason}) ★
-          </div>
-        )}
-        <div style={{ fontSize: '10px', fontWeight: 700 }}>{ticket.poliklinik}</div>
-        <div style={{ fontSize: '9px' }}>{ticket.room}</div>
-        <div style={{ fontSize: '9px' }}>{ticket.dokter}</div>
-      </div>
-
-      <div style={{ fontSize: '9px', padding: '8px 0', borderBottom: '1px dashed #000', lineHeight: 1.5 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Pasien:</span>
-          <strong>{patient.fullName}</strong>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>No. RM:</span>
-          <strong>{patient.noRm}</strong>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Tgl Lahir:</span>
-          <span>{patient.birthDate || '-'}</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Jaminan:</span>
-          <span>{patient.insurance}</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Alergi:</span>
-          <strong>{patient.allergies}</strong>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-          <span>Sedang Dilayani:</span>
-          <strong>{currentServingNumber}</strong>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>Sisa Antrean:</span>
-          <strong>
-            {patientsAhead === 0
-              ? 'Giliran Anda Sekarang'
-              : `${patientsAhead} pasien (±${patientsAhead * 8} mnt)`}
-          </strong>
-        </div>
-      </div>
-
-      <div style={{ textAlign: 'center', paddingTop: '8px' }}>
-        <ThermalQrCodeSvg value={qrPayload} />
-        <div style={{ marginTop: '6px' }}>
-          <ThermalBarcodeSvg value={ticket.ticketId} />
-        </div>
-        <div style={{ fontSize: '8px', marginTop: '3px' }}>
-          ID: {ticket.ticketId} · Biometrik {patient.similarity.toFixed(1)}%
-        </div>
-        <div style={{ fontSize: '8px', marginTop: '4px' }}>
-          Harap tunjukkan struk ini saat dipanggil ke ruang poli.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Panel Panggil Antrean + Suara Otomatis (Text-to-Speech) Minimalis         */
+/*  Panel Antrean Poliklinik Real-Time                                        */
 /* -------------------------------------------------------------------------- */
 
 function MinimalQueuePanel({
@@ -287,7 +47,6 @@ function MinimalQueuePanel({
   onQueueAction,
   isAdvancing,
   lastSpokenText,
-  allowStaffControls,
 }: {
   readonly queues: readonly PoliQueueSnapshot[];
   readonly activePoliName: string;
@@ -295,7 +54,6 @@ function MinimalQueuePanel({
   readonly onQueueAction: (poli: string, action: QueueControlAction) => void;
   readonly isAdvancing: boolean;
   readonly lastSpokenText: string | null;
-  readonly allowStaffControls: boolean;
 }) {
   const currentPoli =
     queues.find((q) => q.poliklinik === activePoliName) ??
@@ -307,14 +65,12 @@ function MinimalQueuePanel({
   const servingStatus = currentPoli.servingStatus ?? 'DIPANGGIL';
 
   return (
-    <div className="no-print mb-6 rounded-2xl border border-neutral-200/80 bg-white p-4 sm:p-5">
+    <div className="mb-6 rounded-2xl border border-neutral-200/80 bg-white p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-100 pb-3.5">
         <div className="flex flex-wrap items-center gap-2.5">
           <span className="h-2 w-2 rounded-full bg-emerald-500" />
           <span className="text-xs font-semibold text-neutral-900">
-            {allowStaffControls
-              ? 'Panel Kontrol Antrean Dokter & Petugas'
-              : 'Informasi Antrean Poliklinik Saat Ini'}
+            State Antrean Poliklinik Real-Time
           </span>
           <select
             value={currentPoli.poliklinik}
@@ -333,57 +89,46 @@ function MinimalQueuePanel({
           </span>
         </div>
 
-        {/* Kontrol Petugas / Dokter (Hanya tampil pada Mode Dokter/Petugas) */}
-        {allowStaffControls && (
-          <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
+            disabled={isAdvancing}
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
+          >
+            <VolumeIcon width={13} height={13} className="text-neutral-600" />
+            <span>Panggil Ulang</span>
+          </button>
+
+          {servingStatus !== 'SELESAI' && (
             <button
               type="button"
-              onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
+              onClick={() => onQueueAction(currentPoli.poliklinik, 'complete')}
               disabled={isAdvancing}
-              title="Panggil ulang nomor saat ini dengan suara Bahasa Indonesia"
-              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
+              className="inline-flex h-8 items-center gap-1 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
             >
-              <VolumeIcon width={13} height={13} className="text-neutral-600" />
-              <span>Panggil Suara</span>
+              <CheckIcon width={13} height={13} className="text-emerald-600" />
+              <span>Selesai</span>
             </button>
+          )}
 
-            {servingStatus !== 'SELESAI' && (
-              <button
-                type="button"
-                onClick={() => onQueueAction(currentPoli.poliklinik, 'complete')}
-                disabled={isAdvancing}
-                title="Tandai pemeriksaan nomor antrean saat ini selesai"
-                className="inline-flex h-8 items-center gap-1 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
-              >
-                <CheckIcon width={13} height={13} className="text-emerald-600" />
-                <span>Selesai</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
-              disabled={!canAdvance || isAdvancing}
-              title={
-                canAdvance
-                  ? 'Panggil antrean berikutnya dan umumkan dengan suara otomatis'
-                  : 'Belum ada antrean menunggu berikutnya'
-              }
-              className="inline-flex h-8 items-center gap-1 rounded-full bg-neutral-900 px-3.5 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-35"
-            >
-              <VolumeIcon width={13} height={13} />
-              <span>Panggil Berikutnya</span>
-              <ChevronRightIcon width={13} height={13} />
-            </button>
-          </div>
-        )}
+          <button
+            type="button"
+            onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
+            disabled={!canAdvance || isAdvancing}
+            className="inline-flex h-8 items-center gap-1 rounded-full bg-neutral-900 px-3.5 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-35"
+          >
+            <VolumeIcon width={13} height={13} />
+            <span>Panggil Berikutnya</span>
+            <ChevronRightIcon width={13} height={13} />
+          </button>
+        </div>
       </div>
 
-      {/* Ringkasan Status Antrean (MENUNGGU -> DIPANGGIL -> SELESAI) */}
       <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-neutral-500">Sedang Dilayani</span>
+            <span className="text-xs text-neutral-500">Nomor Dilayani</span>
             <span
               className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                 servingStatus === 'SELESAI'
@@ -398,7 +143,7 @@ function MinimalQueuePanel({
             {currentPoli.currentServingNumber}
           </p>
           <p className="mt-0.5 truncate text-xs text-neutral-500">
-            {currentPoli.currentPatientName ?? 'Pasien Poliklinik'}
+            {currentPoli.currentPatientName ?? 'Subjek Poliklinik'}
           </p>
         </div>
 
@@ -415,33 +160,37 @@ function MinimalQueuePanel({
         </div>
 
         <div>
-          <span className="text-xs text-neutral-500">Sisa Menunggu</span>
+          <span className="text-xs text-neutral-500">Total Menunggu</span>
           <p className="mt-1 text-2xl font-semibold tracking-tight text-neutral-900">
             {currentPoli.totalWaiting}{' '}
-            <span className="text-xs font-normal text-neutral-500">pasien</span>
+            <span className="text-xs font-normal text-neutral-500">subjek</span>
           </p>
           <p className="mt-0.5 text-xs text-neutral-500">
-            Terakhir: <span className="font-mono">{currentPoli.latestQueueNumber}</span>
+            Terbit terakhir:{' '}
+            <span className="font-mono">{currentPoli.latestQueueNumber}</span>
           </p>
         </div>
 
         <div>
-          <span className="text-xs text-neutral-500">Estimasi Tunggu Baru</span>
+          <span className="text-xs text-neutral-500">Estimasi Tunggu</span>
           <p className="mt-1 text-2xl font-semibold tracking-tight text-neutral-900">
             ± {currentPoli.estimatedWaitMinutes + 8}{' '}
             <span className="text-xs font-normal text-neutral-500">menit</span>
           </p>
-          <p className="mt-0.5 text-xs text-neutral-500">Rata-rata 8 menit/pasien</p>
+          <p className="mt-0.5 text-xs text-neutral-500">8 menit / subjek</p>
         </div>
       </div>
 
-      {/* Transkrip Panggilan Suara TTS Aktif */}
       {lastSpokenText && (
         <div className="mt-3.5 flex items-center justify-between gap-2 rounded-xl bg-neutral-50 px-3.5 py-2 text-xs text-neutral-600">
           <div className="flex items-center gap-2 min-w-0">
-            <VolumeIcon width={14} height={14} className="shrink-0 text-emerald-600" />
+            <VolumeIcon
+              width={14}
+              height={14}
+              className="shrink-0 text-emerald-600"
+            />
             <span className="truncate font-medium">
-              Suara TTS: &ldquo;{lastSpokenText}&rdquo;
+              TTS: &ldquo;{lastSpokenText}&rdquo;
             </span>
           </div>
           <span className="shrink-0 text-[10px] text-neutral-400">id-ID</span>
@@ -452,304 +201,26 @@ function MinimalQueuePanel({
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Mode Layar TV Ruang Tunggu Poliklinik (Public Queue Display)              */
+/*  Panel Input Manual No. RM (Fallback Bypass RM-2026-501B)                  */
 /* -------------------------------------------------------------------------- */
-
-function WaitingRoomTvDisplay({
-  queues,
-  activePoliName,
-  onSelectPoli,
-  onQueueAction,
-  isAdvancing,
-  lastSpokenText,
-}: {
-  readonly queues: readonly PoliQueueSnapshot[];
-  readonly activePoliName: string;
-  readonly onSelectPoli: (poli: string) => void;
-  readonly onQueueAction: (poli: string, action: QueueControlAction) => void;
-  readonly isAdvancing: boolean;
-  readonly lastSpokenText: string | null;
-}) {
-  const [clockText, setClockText] = useState<string>('');
-  const [dateText, setDateText] = useState<string>('');
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-
-  useEffect(() => {
-    const updateClock = () => {
-      const now = new Date();
-      setClockText(
-        now.toLocaleTimeString('id-ID', {
-          hour: '2-digit',
-          minute: '2-digit',
-        }) + ' WIB',
-      );
-      setDateText(
-        now.toLocaleDateString('id-ID', {
-          weekday: 'long',
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-        }),
-      );
-    };
-    updateClock();
-    const timer = window.setInterval(updateClock, 10000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const onFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
-    };
-    document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
-  }, []);
-
-  const toggleFullscreen = async () => {
-    try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch {
-      /* abaikan jika browser membatasi fullscreen */
-    }
-  };
-
-  const currentPoli =
-    queues.find((q) => q.poliklinik === activePoliName) ??
-    queues[0] ??
-    DEFAULT_POLI_QUEUES[0];
-
-  const canAdvance =
-    currentPoli.currentServingSequence < currentPoli.latestQueueSequence;
-  const servingStatus = currentPoli.servingStatus ?? 'DIPANGGIL';
-
-  return (
-    <div className="overflow-hidden rounded-2xl border border-neutral-200/90 bg-white">
-      {/* Top Bar Minimalis */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-200/80 px-6 py-4">
-        <div className="flex items-baseline gap-3">
-          <span className="text-sm font-semibold tracking-tight text-neutral-900">
-            Instalasi Rawat Jalan
-          </span>
-          <span className="text-xs text-neutral-400">
-            Papan Informasi Antrean Poliklinik
-          </span>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 text-xs text-neutral-500">
-            <span>{dateText}</span>
-            <span className="text-neutral-300">·</span>
-            <span className="font-mono font-semibold text-neutral-900">
-              {clockText}
-            </span>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => void toggleFullscreen()}
-            className="h-8 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
-          >
-            {isFullscreen ? 'Keluar layar penuh' : 'Layar penuh'}
-          </button>
-        </div>
-      </div>
-
-      {/* Main Split Grid: Kiri (Fokus Panggilan), Kanan (Tabel Direktori 10 Poli) */}
-      <div className="grid divide-y divide-neutral-200/80 lg:grid-cols-[1.15fr_1fr] lg:divide-x lg:divide-y-0">
-        {/* Panel Kiri: Nomor Sedang Dilayani */}
-        <div className="flex flex-col justify-between p-7 sm:p-10">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  servingStatus === 'SELESAI'
-                    ? 'bg-neutral-300'
-                    : 'bg-emerald-600'
-                }`}
-              />
-              <span className="text-xs font-medium text-neutral-500">
-                {servingStatus === 'SELESAI'
-                  ? 'Pelayanan selesai'
-                  : 'Sedang dipanggil'}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => onQueueAction(currentPoli.poliklinik, 'recall')}
-                disabled={isAdvancing}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
-              >
-                <VolumeIcon width={13} height={13} className="text-neutral-500" />
-                Panggil ulang
-              </button>
-              <button
-                type="button"
-                onClick={() => onQueueAction(currentPoli.poliklinik, 'call_next')}
-                disabled={!canAdvance || isAdvancing}
-                className="inline-flex h-8 items-center gap-1 rounded-lg bg-neutral-900 px-3.5 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-35"
-              >
-                Berikutnya
-                <ChevronRightIcon width={13} height={13} />
-              </button>
-            </div>
-          </div>
-
-          {/* Nomor Antrean Utama */}
-          <div className="my-10 sm:my-14">
-            <p className="font-mono text-7xl font-semibold leading-none tracking-tighter text-neutral-950 sm:text-8xl">
-              {currentPoli.currentServingNumber}
-            </p>
-            <p className="mt-5 text-xl font-medium tracking-tight text-neutral-900 sm:text-2xl">
-              {currentPoli.currentPatientName ?? 'Pasien Poliklinik'}
-            </p>
-            <p className="mt-1.5 text-xs text-neutral-500">
-              No. RM{' '}
-              <span className="font-mono text-neutral-700">
-                {currentPoli.currentPatientNoRm ?? '—'}
-              </span>{' '}
-              · Silakan menuju{' '}
-              <span className="font-medium text-neutral-800">
-                {currentPoli.room.replace('•', '·')}
-              </span>
-            </p>
-          </div>
-
-          {/* Ringkasan Bawah */}
-          <div>
-            <div className="grid grid-cols-3 gap-6 border-t border-neutral-150 pt-6 text-xs">
-              <div>
-                <p className="text-neutral-400">Poliklinik</p>
-                <p className="mt-1 font-medium text-neutral-900">
-                  {currentPoli.poliklinik}
-                </p>
-                <p className="mt-0.5 truncate text-neutral-500">
-                  {currentPoli.dokter}
-                </p>
-              </div>
-
-              <div>
-                <p className="text-neutral-400">Berikutnya</p>
-                <p className="mt-1 font-mono text-base font-semibold text-neutral-900">
-                  {currentPoli.nextQueueNumber ?? '—'}
-                </p>
-                <p className="mt-0.5 truncate text-neutral-500">
-                  {currentPoli.nextPatientName ?? 'Tidak ada antrean'}
-                </p>
-              </div>
-
-              <div>
-                <p className="text-neutral-400">Sisa antrean</p>
-                <p className="mt-1 font-medium text-neutral-900">
-                  {currentPoli.totalWaiting} pasien
-                </p>
-                <p className="mt-0.5 font-mono text-neutral-500">
-                  Terakhir {currentPoli.latestQueueNumber}
-                </p>
-              </div>
-            </div>
-
-            {lastSpokenText && (
-              <div className="mt-5 flex items-center gap-2 border-t border-neutral-100 pt-3.5 text-xs text-neutral-500">
-                <VolumeIcon width={13} height={13} className="shrink-0 text-neutral-400" />
-                <span className="truncate">{lastSpokenText}</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Panel Kanan: Tabel Direktori 10 Poliklinik */}
-        <div className="flex flex-col">
-          <div className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-neutral-100 bg-neutral-50/60 px-6 py-3 text-[11px] font-medium text-neutral-400">
-            <span>Poliklinik</span>
-            <span className="text-right">Menunggu</span>
-            <span className="w-20 text-right">Dilayani</span>
-          </div>
-
-          <div className="divide-y divide-neutral-100">
-            {queues.map((q) => {
-              const isSelected = q.poliklinik === currentPoli.poliklinik;
-              return (
-                <button
-                  key={q.poliklinik}
-                  type="button"
-                  onClick={() => onSelectPoli(q.poliklinik)}
-                  className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-4 px-6 py-3.5 text-left transition ${
-                    isSelected
-                      ? 'bg-neutral-100/80'
-                      : 'bg-white hover:bg-neutral-50/70'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`truncate text-xs ${
-                          isSelected
-                            ? 'font-semibold text-neutral-950'
-                            : 'font-medium text-neutral-800'
-                        }`}
-                      >
-                        {q.poliklinik}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 truncate text-[11px] text-neutral-400">
-                      {q.room.replace('•', '·')} · {q.dokter}
-                    </p>
-                  </div>
-
-                  <span className="text-right text-xs text-neutral-500">
-                    {q.totalWaiting > 0 ? `${q.totalWaiting} pasien` : '—'}
-                  </span>
-
-                  <span
-                    className={`w-20 text-right font-mono text-sm ${
-                      isSelected
-                        ? 'font-semibold text-neutral-950'
-                        : 'font-medium text-neutral-800'
-                    }`}
-                  >
-                    {q.currentServingNumber}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Empty State Minimalis                                                     */
-/* -------------------------------------------------------------------------- */
-
-/** Format No. RM / ID pasien: RM-2026-501B, RM-2026-0801, MHS-2026-001. */
-const MANUAL_RM_PATTERN = /^[A-Z]{2,4}-\d{4}-[0-9A-Z]{3,6}$/;
 
 const normalizeRmInput = (value: string): string =>
   value.trim().toUpperCase().replace(/\s+/g, '').replace(/_/g, '-');
 
-function EmptyState({
+function ManualRmFallbackPanel({
   activePoliQueue,
   onManualRmSubmit,
+  onGoToRegister,
   isSubmitting,
   lookupError,
 }: {
   readonly activePoliQueue: PoliQueueSnapshot;
   readonly onManualRmSubmit: (noRm: string) => Promise<boolean>;
+  readonly onGoToRegister?: () => void;
   readonly isSubmitting: boolean;
   readonly lookupError: string | null;
 }) {
-  const [showRmFallback, setShowRmFallback] = useState(false);
-  const [rmInput, setRmInput] = useState('');
-  const [rmFormatError, setRmFormatError] = useState<string | null>(null);
-  const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [rmInput, setRmInput] = useState(DEMO_BYPASS_RM);
 
   const nextNumber = `${activePoliQueue.prefix}-${String(
     activePoliQueue.latestQueueSequence + 1,
@@ -760,183 +231,143 @@ function EmptyState({
   );
 
   const normalizedRm = normalizeRmInput(rmInput);
-  const inlineError =
-    rmFormatError ?? (hasSubmitted && !isSubmitting ? lookupError : null);
-
-  const closeFallback = () => {
-    setShowRmFallback(false);
-    setRmInput('');
-    setRmFormatError(null);
-    setHasSubmitted(false);
-  };
 
   const handleRmSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!MANUAL_RM_PATTERN.test(normalizedRm)) {
-      setRmFormatError(
-        'Format No. RM tidak valid. Contoh: RM-2026-501B atau MHS-2026-001.',
-      );
-      return;
-    }
-    setRmFormatError(null);
-    setHasSubmitted(true);
-    const ok = await onManualRmSubmit(normalizedRm);
-    if (ok) {
-      closeFallback();
-    }
+    if (!normalizedRm) return;
+    await onManualRmSubmit(normalizedRm);
   };
 
   return (
     <div className="flex h-full min-h-[22rem] flex-col justify-between rounded-2xl border border-neutral-200/80 bg-white p-6">
-      <div className="my-auto flex flex-col items-center text-center py-6">
-        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-neutral-100 text-neutral-600">
+      <div className="my-auto flex flex-col items-center text-center py-4">
+        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-neutral-100 text-neutral-700">
           <ScanIcon width={20} height={20} />
         </div>
         <p className="mt-3.5 text-sm font-semibold text-neutral-900">
-          Menunggu Pemindaian Wajah Pasien
+          Siap Mengekstraksi Vektor Biometrik Wajah
         </p>
         <p className="mt-1 max-w-xs text-xs leading-relaxed text-neutral-500">
-          Hadapkan wajah ke kamera dan tahan 1,5 detik. Sistem memvalidasi Liveness Biometrik &amp; Geometri Spasial dan menerbitkan tiket antrean otomatis.
+          Arahkan wajah ke sensor kamera untuk ekstraksi vektor fitur (FaceNet /
+          Rekognition) dan pencocokan jarak <em>Cosine Similarity</em> terhadap
+          ambang batas (<em>threshold</em> 80%).
         </p>
+
+        {onGoToRegister && (
+          <button
+            type="button"
+            onClick={onGoToRegister}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-neutral-200 bg-neutral-50 px-3.5 py-1.5 text-xs font-medium text-neutral-700 transition hover:border-neutral-300 hover:bg-neutral-100"
+          >
+            <UserPlusIcon width={13} height={13} />
+            Daftar Pasien Baru (Face Enrollment)
+          </button>
+        )}
       </div>
 
-      <div className="space-y-3">
-        <div className="rounded-xl bg-neutral-50 p-3.5 text-xs">
+      <div className="space-y-3.5 border-t border-neutral-100 pt-4">
+        <div className="rounded-xl bg-neutral-50 p-3 text-xs">
           <div className="flex items-center justify-between">
             <span className="text-neutral-500">
-              Tiket berikutnya ({activePoliQueue.poliklinik})
+              Estimasi Nomor ({activePoliQueue.poliklinik})
             </span>
             <span className="font-mono font-semibold text-neutral-900">
-              {nextNumber} · Menunggu {waitingForNext} pasien (±{waitingForNext * 8} mnt)
+              {nextNumber} · Antrean {waitingForNext} (±{waitingForNext * 8} mnt)
             </span>
           </div>
         </div>
 
-        {/* Fallback Rekam Medis Manual (pasien tidak memungkinkan dipindai biometrik) */}
-        <div className="border-t border-neutral-100 pt-3">
-          {!showRmFallback ? (
-            <p className="text-center text-xs text-neutral-500">
-              Kendala pemindaian?{' '}
-              <button
-                id="manual-rm-toggle"
-                type="button"
-                onClick={() => setShowRmFallback(true)}
-                className="font-medium text-neutral-900 underline decoration-neutral-300 underline-offset-4 transition hover:decoration-neutral-900"
-              >
-                Input No. RM Manual
-              </button>
-            </p>
-          ) : (
-            <form
-              onSubmit={(e) => void handleRmSubmit(e)}
-              noValidate
-              className="space-y-2"
-              aria-label="Input Nomor Rekam Medis Manual"
+        {/* Form Input Manual No. RM (Fallback Bypass tanpa komputasi biometrik) */}
+        <form
+          onSubmit={(e) => void handleRmSubmit(e)}
+          noValidate
+          className="space-y-2"
+          aria-label="Input Manual No. RM (Fallback Bypass)"
+        >
+          <div className="flex items-center justify-between">
+            <label
+              htmlFor="manual-rm-input"
+              className="flex items-center gap-1.5 text-xs font-semibold text-neutral-800"
             >
-              <div className="flex items-center justify-between">
-                <label
-                  htmlFor="manual-rm-input"
-                  className="flex items-center gap-1.5 text-xs font-medium text-neutral-800"
-                >
-                  <FileTextIcon width={13} height={13} className="text-neutral-500" />
-                  Nomor Rekam Medis
-                </label>
-                <button
-                  type="button"
-                  onClick={closeFallback}
-                  className="text-[11px] text-neutral-400 transition hover:text-neutral-700"
-                >
-                  Batal
-                </button>
-              </div>
+              <FileTextIcon width={13} height={13} className="text-neutral-500" />
+              Input Manual No. RM (Fallback Bypass)
+            </label>
+            <button
+              type="button"
+              onClick={() => setRmInput(DEMO_BYPASS_RM)}
+              className="font-mono text-[11px] font-medium text-emerald-700 hover:underline"
+            >
+              Isi {DEMO_BYPASS_RM}
+            </button>
+          </div>
 
-              <div
-                className={`flex items-center gap-2 rounded-xl border bg-neutral-50 p-1.5 pl-3 transition focus-within:bg-white ${
-                  inlineError
-                    ? 'border-rose-300 focus-within:border-rose-400'
-                    : 'border-neutral-200 focus-within:border-neutral-900'
-                }`}
-              >
-                <input
-                  id="manual-rm-input"
-                  value={rmInput}
-                  onChange={(e) => {
-                    setRmInput(e.target.value);
-                    setRmFormatError(null);
-                    setHasSubmitted(false);
-                  }}
-                  placeholder="RM-2026-501B"
-                  autoFocus
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  enterKeyHint="go"
-                  maxLength={20}
-                  aria-invalid={inlineError !== null}
-                  aria-describedby="manual-rm-hint"
-                  className="h-8 min-w-0 flex-1 bg-transparent font-mono text-[16px] uppercase tracking-wide text-neutral-900 outline-none placeholder:normal-case placeholder:text-neutral-400 sm:text-sm"
-                />
-                <button
-                  id="manual-rm-submit"
-                  type="submit"
-                  disabled={isSubmitting || normalizedRm.length === 0}
-                  className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
-                >
-                  {isSubmitting ? (
-                    <>
-                      <span className="h-3 w-3 animate-spin rounded-full border border-white/40 border-t-white" />
-                      Membuka…
-                    </>
-                  ) : (
-                    <>
-                      Buka RM &amp; Terbitkan Tiket
-                      <ChevronRightIcon width={12} height={12} />
-                    </>
-                  )}
-                </button>
-              </div>
+          <div className="flex items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 p-1.5 pl-3 transition focus-within:border-neutral-900 focus-within:bg-white">
+            <input
+              id="manual-rm-input"
+              value={rmInput}
+              onChange={(e) => setRmInput(e.target.value)}
+              placeholder="RM-2026-501B"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={24}
+              className="h-8 min-w-0 flex-1 bg-transparent font-mono text-xs uppercase tracking-wide text-neutral-900 outline-none placeholder:text-neutral-400"
+            />
+            <button
+              id="manual-rm-submit"
+              type="submit"
+              disabled={isSubmitting || normalizedRm.length === 0}
+              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
+            >
+              {isSubmitting ? (
+                <>
+                  <span className="h-3 w-3 animate-spin rounded-full border border-white/40 border-t-white" />
+                  Memproses…
+                </>
+              ) : (
+                <>
+                  Terbitkan Antrean (Bypass)
+                  <ChevronRightIcon width={12} height={12} />
+                </>
+              )}
+            </button>
+          </div>
 
-              <p
-                id="manual-rm-hint"
-                role={inlineError ? 'alert' : undefined}
-                className={`text-[11px] leading-relaxed ${
-                  inlineError ? 'text-rose-600' : 'text-neutral-400'
-                }`}
-              >
-                {inlineError ??
-                  'Contoh: RM-2026-501B atau MHS-2026-001. Gunakan bila pasien tidak memungkinkan dipindai biometrik.'}
-              </p>
-            </form>
+          <p className="text-[11px] leading-relaxed text-neutral-400">
+            Menggunakan <code className="font-mono text-neutral-600">{DEMO_BYPASS_RM}</code>{' '}
+            menerbitkan nomor antrean secara instan tanpa mengeksekusi pencocokan
+            vektor biometrik (untuk keperluan demonstrasi / kontrol pembanding).
+          </p>
+
+          {lookupError && (
+            <p role="alert" className="text-[11px] font-medium text-rose-600">
+              {lookupError}
+            </p>
           )}
-        </div>
+        </form>
       </div>
     </div>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Kartu Tiket Antrean Pasien Minimalis                                      */
+/*  Kartu Hasil Identifikasi Biometrik & Nomor Antrean                        */
 /* -------------------------------------------------------------------------- */
 
-function QueueTicketCard({
+function BiometricQueueResultCard({
   patient,
+  feedbackMessage,
   livePoliQueue,
   onQueueAction,
   isAdvancing,
   onNext,
-  allowStaffControls,
-  capturedImage,
 }: {
   readonly patient: RecognizedPerson;
+  readonly feedbackMessage?: string | null;
   readonly livePoliQueue?: PoliQueueSnapshot;
   readonly onQueueAction: (poli: string, action: QueueControlAction) => void;
   readonly isAdvancing: boolean;
   readonly onNext: () => void;
-  readonly allowStaffControls: boolean;
-  readonly capturedImage?: string | null;
 }) {
-  const [showXaiInspector, setShowXaiInspector] = useState(false);
   const ticket = patient.queueTicket;
   if (!ticket) {
     return null;
@@ -948,22 +379,7 @@ function QueueTicketCard({
     livePoliQueue?.currentServingNumber ?? ticket.currentServingNumber;
   const servingStatus = livePoliQueue?.servingStatus ?? 'DIPANGGIL';
 
-  const clinicalPriority = evaluateClinicalPriority({
-    age: patient.age,
-    birthDate: patient.birthDate,
-    chronicConditions: patient.chronicConditions,
-  });
-  const isPriority = ticket.isPriority ?? clinicalPriority.isPriority;
-  const priorityReason =
-    ticket.priorityReason || clinicalPriority.priorityReason;
-
-  const rawAhead = Math.max(0, ticket.queueSequence - currentServingSeq);
-  const fastTrackSaved =
-    isPriority && rawAhead >= 2
-      ? ticket.fastTrackSavedPatients ||
-        Math.min(rawAhead - 1, Math.max(1, Math.floor(rawAhead / 2)))
-      : 0;
-  const patientsAhead = Math.max(0, rawAhead - fastTrackSaved);
+  const patientsAhead = Math.max(0, ticket.queueSequence - currentServingSeq);
   const estimatedWaitMinutes = patientsAhead * 8;
   const isTurnNow = patientsAhead === 0;
   const isCompleted = isTurnNow && servingStatus === 'SELESAI';
@@ -974,51 +390,45 @@ function QueueTicketCard({
       ? 'DIPANGGIL'
       : 'MENUNGGU';
 
-  const isDuplicateScan =
-    patient.alreadyQueued === true || ticket.isExistingTicket === true;
+  const isManualBypass = patient.verificationMethod === 'MANUAL_LOOKUP';
 
   return (
-    <div className="no-print rounded-2xl border border-neutral-200/80 bg-white p-5">
-      {isPriority && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50/85 px-3.5 py-2.5 text-xs text-rose-950">
-          <div className="flex items-center gap-2">
-            <span className="inline-flex h-5 items-center rounded-full bg-rose-600 px-2 font-mono text-[10px] font-bold tracking-wide text-white">
-              ★ PRIORITAS FAST-TRACK
-            </span>
-            <span className="font-semibold text-rose-900">
-              Triase Klinis Otomatis: {priorityReason}
+    <div className="space-y-4 rounded-2xl border border-neutral-200/80 bg-white p-5">
+      {/* Banner Konfirmasi Ilmiah Cosine Similarity */}
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50/85 px-3.5 py-2.5 text-xs text-emerald-950">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+            <ShieldCheckIcon width={15} height={15} className="text-emerald-600" />
+            <span>
+              {isManualBypass
+                ? 'Bypass Manual No. RM Berhasil (Tanpa Komputasi Biometrik)'
+                : 'Identifikasi Berhasil. Jarak Cosine Similarity memenuhi threshold.'}
             </span>
           </div>
-          <span className="font-mono text-[11px] font-medium text-rose-700">
-            {fastTrackSaved > 0
-              ? `Didahulukan ${fastTrackSaved} antrean (Hemat ±${fastTrackSaved * 8} mnt)`
-              : 'Jalur Layanan Prioritas Medis'}
+          <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 font-mono text-[11px] font-bold text-emerald-800">
+            {isManualBypass
+              ? 'MANUAL BYPASS'
+              : `Cosine Similarity: ${patient.similarity.toFixed(2)}%`}
           </span>
         </div>
-      )}
+        {feedbackMessage && (
+          <p className="mt-1 text-[11px] text-emerald-800">{feedbackMessage}</p>
+        )}
+      </div>
 
-      {isDuplicateScan && (
-        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 text-xs text-amber-900">
-          <p className="font-semibold">
-            Antrean Aktif Sudah Ada (Tidak Dobel Order)
-          </p>
-          <p className="mt-0.5 text-[11px] text-amber-800">
-            Satu pasien hanya dapat memiliki 1 antrean aktif. Menampilkan tiket{' '}
-            <strong className="font-mono">{ticket.queueNumber}</strong> milik{' '}
-            <strong>{patient.fullName}</strong> tanpa menerbitkan nomor baru.
-          </p>
-        </div>
-      )}
-
-      <div className="flex items-start justify-between gap-4">
+      {/* Nomor Antrean Utama */}
+      <div className="flex items-start justify-between gap-4 border-b border-neutral-100 pb-4">
         <div>
-          <span className="text-xs text-neutral-500">Nomor Antrean Pasien</span>
+          <span className="text-xs text-neutral-500">Nomor Antrean Terbit</span>
           <div className="mt-1 flex items-baseline gap-3">
             <span className="font-mono text-4xl font-semibold tracking-tight text-neutral-900">
               {ticket.queueNumber}
             </span>
             <span className="text-xs text-neutral-500">
-              Dilayani: <strong className="font-mono text-neutral-800">{currentServingNumber}</strong>
+              Dilayani:{' '}
+              <strong className="font-mono text-neutral-800">
+                {currentServingNumber}
+              </strong>
             </span>
           </div>
         </div>
@@ -1033,714 +443,133 @@ function QueueTicketCard({
           }`}
         >
           {ticketStateLabel === 'MENUNGGU'
-            ? `MENUNGGU · ${patientsAhead} pasien lagi (±${estimatedWaitMinutes} mnt)`
+            ? `MENUNGGU · ${patientsAhead} antrean (±${estimatedWaitMinutes} mnt)`
             : ticketStateLabel}
         </span>
       </div>
 
-      <div className="mt-4 grid grid-cols-3 gap-3 border-t border-neutral-100 pt-3.5 text-xs">
+      {/* Ringkasan Subjek & Metrik Latensi */}
+      <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3">
         <div>
-          <p className="text-neutral-400">Poliklinik</p>
-          <p className="mt-0.5 font-medium text-neutral-900">{ticket.poliklinik}</p>
+          <p className="text-neutral-400">Nama Subjek / Pasien</p>
+          <p className="mt-0.5 font-semibold text-neutral-900">
+            {patient.fullName}
+          </p>
         </div>
         <div>
-          <p className="text-neutral-400">Ruang</p>
+          <p className="text-neutral-400">Nomor RM / ID</p>
+          <p className="mt-0.5 font-mono font-medium text-neutral-900">
+            {patient.noRm}
+          </p>
+        </div>
+        <div>
+          <p className="text-neutral-400">Poliklinik Tujuan</p>
+          <p className="mt-0.5 font-medium text-neutral-900">
+            {ticket.poliklinik}
+          </p>
+        </div>
+        <div>
+          <p className="text-neutral-400">Lokasi Ruang</p>
           <p className="mt-0.5 font-medium text-neutral-900">{ticket.room}</p>
         </div>
         <div>
-          <p className="text-neutral-400">Dokter</p>
-          <p className="mt-0.5 font-medium text-neutral-900">{ticket.dokter}</p>
+          <p className="text-neutral-400">Metode Verifikasi</p>
+          <p className="mt-0.5 font-mono text-[11px] font-medium text-neutral-800">
+            {isManualBypass ? 'MANUAL_RM_BYPASS' : 'FACENET_COSINE_SIMILARITY'}
+          </p>
+        </div>
+        <div>
+          <p className="text-neutral-400">Latensi Eksekusi</p>
+          <p className="mt-0.5 font-mono text-[11px] font-medium text-neutral-800">
+            {patient.totalLatencyMs !== undefined
+              ? `${patient.totalLatencyMs.toFixed(1)} ms (${patient.coldStart ? 'COLD START' : 'WARM START'})`
+              : 'Tercatat di Log'}
+          </p>
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-neutral-100 pt-3.5">
-        <button
-          type="button"
-          onClick={() => window.print()}
-          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-full bg-neutral-900 px-4 py-2 text-xs font-medium text-white transition hover:bg-neutral-800"
-        >
-          <PrinterIcon width={14} height={14} />
-          Cetak Struk Thermal
-        </button>
-
-        {allowStaffControls && (
-          <>
-            {!isTurnNow ? (
-              <button
-                type="button"
-                onClick={() => onQueueAction(ticket.poliklinik, 'call_next')}
-                disabled={isAdvancing}
-                className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
-              >
-                <VolumeIcon width={13} height={13} />
-                Panggil (+1)
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() =>
-                  onQueueAction(
-                    ticket.poliklinik,
-                    isCompleted ? 'recall' : 'complete',
-                  )
-                }
-                disabled={isAdvancing}
-                className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
-              >
-                <CheckIcon width={13} height={13} />
-                {isCompleted ? 'Panggil Ulang' : 'Tandai Selesai'}
-              </button>
-            )}
-          </>
-        )}
-
-        <button
-          type="button"
-          onClick={() => setShowXaiInspector((v) => !v)}
-          className={`inline-flex items-center justify-center gap-1.5 rounded-full border px-3.5 py-2 text-xs font-medium transition ${
-            showXaiInspector
-              ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
-              : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
-          }`}
-        >
-          <ScanIcon width={13} height={13} />
-          {showXaiInspector ? 'Tutup XAI Wajah' : 'Bedah Fitur Wajah (XAI)'}
-        </button>
+      {/* Tombol Aksi */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-neutral-100 pt-3.5">
+        <div className="flex items-center gap-2">
+          {!isTurnNow ? (
+            <button
+              type="button"
+              onClick={() => onQueueAction(ticket.poliklinik, 'call_next')}
+              disabled={isAdvancing}
+              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
+            >
+              <VolumeIcon width={13} height={13} />
+              Panggil Antrean (+1)
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() =>
+                onQueueAction(
+                  ticket.poliklinik,
+                  isCompleted ? 'recall' : 'complete',
+                )
+              }
+              disabled={isAdvancing}
+              className="inline-flex items-center justify-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50"
+            >
+              <CheckIcon width={13} height={13} />
+              {isCompleted ? 'Panggil Ulang' : 'Tandai Selesai'}
+            </button>
+          )}
+        </div>
 
         <button
           type="button"
           onClick={onNext}
-          className="inline-flex items-center justify-center rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-medium text-neutral-600 transition hover:bg-neutral-50"
+          className="inline-flex items-center justify-center gap-1.5 rounded-full bg-neutral-900 px-4 py-2 text-xs font-medium text-white transition hover:bg-neutral-800"
         >
-          Pasien Berikutnya
+          <RefreshIcon width={13} height={13} />
+          Pindai Subjek Berikutnya
         </button>
       </div>
-
-      {showXaiInspector && (
-        <div className="mt-4 border-t border-neutral-100 pt-4">
-          <BiometricXaiInspectorCard
-            liveImageSrc={capturedImage}
-            livePatientName={patient.fullName}
-            liveNoRm={patient.noRm}
-            liveSimilarity={patient.similarity}
-            compact
-          />
-        </div>
-      )}
     </div>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Rekam Medis Pasien + Form Tambah Riwayat Pemeriksaan Dokter               */
+/*  Komponen Utama SIMRS Biometric Queue                                      */
 /* -------------------------------------------------------------------------- */
 
-function PatientDetails({
-  patient,
-  onAddHistory,
-  allowDoctorForm,
-}: {
-  readonly patient: RecognizedPerson;
-  readonly onAddHistory: (
-    item: MedicalHistoryItem,
-    fullHistory?: readonly MedicalHistoryItem[],
-  ) => void;
-  readonly allowDoctorForm: boolean;
-}) {
-  const allergy = hasRealAllergy(patient.allergies);
-  const [isAddingNote, setIsAddingNote] = useState(false);
-  const [icdSearchQuery, setIcdSearchQuery] = useState('');
-  const [selectedIcd, setSelectedIcd] = useState<Icd10Entry | null>(null);
-  const [showIcdDropdown, setShowIcdDropdown] = useState(false);
-  const [diagnosisCustomSuffix, setDiagnosisCustomSuffix] = useState('');
-  const [treatment, setTreatment] = useState('');
-  const [notePoli, setNotePoli] = useState(
-    patient.queueTicket?.poliklinik ?? patient.poliklinik,
-  );
-  const [noteDoctor, setNoteDoctor] = useState(
-    patient.queueTicket?.dokter ?? patient.dokter,
-  );
-  const [isSavingNote, setIsSavingNote] = useState(false);
-  const [noteError, setNoteError] = useState<string | null>(null);
-  const [showFhirPreview, setShowFhirPreview] = useState(false);
+const QUEUE_POLL_INTERVAL_MS = 4000;
 
-  useEffect(() => {
-    setNotePoli(patient.queueTicket?.poliklinik ?? patient.poliklinik);
-    setNoteDoctor(patient.queueTicket?.dokter ?? patient.dokter);
-    setSelectedIcd(null);
-    setIcdSearchQuery('');
-    setDiagnosisCustomSuffix('');
-  }, [patient.personId, patient.poliklinik, patient.dokter, patient.queueTicket]);
-
-  const icdSuggestions = searchIcd10Catalog(icdSearchQuery, notePoli, 8);
-
-  const handleSelectIcdEntry = (entry: Icd10Entry) => {
-    setSelectedIcd(entry);
-    setIcdSearchQuery(`${entry.code} — ${entry.nameId}`);
-    setShowIcdDropdown(false);
-    if (!treatment.trim()) {
-      setTreatment(entry.defaultTreatment);
-    }
-  };
-
-  const composedDiagnosis = selectedIcd
-    ? diagnosisCustomSuffix.trim()
-      ? `${formatIcd10Diagnosis(selectedIcd)} — ${diagnosisCustomSuffix.trim()}`
-      : formatIcd10Diagnosis(selectedIcd)
-    : '';
-
-  const handleSaveDoctorNote = async (e: FormEvent) => {
-    e.preventDefault();
-    setNoteError(null);
-    if (!selectedIcd) {
-      setNoteError(
-        'Pilih kode diagnosis standar WHO ICD-10 dari daftar pencarian terlebih dahulu.',
-      );
-      return;
-    }
-    if (!treatment.trim()) {
-      setNoteError('Tindakan klinis dan resep obat wajib diisi.');
-      return;
-    }
-
-    setIsSavingNote(true);
-    const result = await addMedicalRecord({
-      personId: patient.personId,
-      noRm: patient.noRm,
-      poliklinik: notePoli,
-      doctor: noteDoctor,
-      diagnosis: composedDiagnosis,
-      treatment: treatment.trim(),
-    });
-    setIsSavingNote(false);
-
-    if (!result.success) {
-      setNoteError(result.message);
-      return;
-    }
-
-    const newEntry: MedicalHistoryItem = result.record ?? {
-      date: new Date().toISOString().slice(0, 10),
-      poliklinik: notePoli,
-      doctor: noteDoctor,
-      diagnosis: composedDiagnosis,
-      treatment: treatment.trim(),
-    };
-
-    onAddHistory(newEntry, result.medicalHistory);
-    setSelectedIcd(null);
-    setIcdSearchQuery('');
-    setDiagnosisCustomSuffix('');
-    setTreatment('');
-    setIsAddingNote(false);
-  };
-
-  const fhirBundle = showFhirPreview ? buildSatusehatFhirBundle(patient) : null;
-
-  return (
-    <div className="no-print rounded-2xl border border-neutral-200/80 bg-white p-5">
-      {/* Identitas Pasien & Status Kepatuhan UU PDP */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-xs font-semibold text-neutral-700">
-            {patient.fullName
-              .split(' ')
-              .slice(0, 2)
-              .map((w) => w[0])
-              .join('')
-              .toUpperCase()}
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-neutral-900">
-              {patient.fullName}
-            </p>
-            <p className="text-xs text-neutral-500">
-              <span className="font-mono">{patient.noRm}</span> · {patient.gender} ·{' '}
-              {patient.age} th
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span
-            title="Persetujuan pemrosesan data biometrik & RME sesuai UU PDP No. 27/2022 tercatat"
-            className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2.5 py-1 text-[10px] font-semibold text-sky-700"
-          >
-            <CheckIcon width={11} height={11} />
-            UU PDP Consent
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
-            <ShieldCheckIcon width={13} height={13} />
-            {patient.similarity.toFixed(1)}%
-          </span>
-        </div>
-      </div>
-
-      {/* Ringkasan Medis */}
-      <dl className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 border-t border-neutral-100 pt-3.5 text-xs">
-        <div>
-          <dt className="text-neutral-400">Tgl Lahir</dt>
-          <dd className="mt-0.5 font-medium text-neutral-900">{patient.birthDate || '-'}</dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">Gol. Darah</dt>
-          <dd className="mt-0.5 font-medium text-neutral-900">{patient.bloodType}</dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">Jaminan</dt>
-          <dd className="mt-0.5 font-medium text-neutral-900">{patient.insurance}</dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">NIK (IHS)</dt>
-          <dd className="mt-0.5 font-mono font-medium text-neutral-900 truncate">
-            {patient.nik || '-'}
-          </dd>
-        </div>
-      </dl>
-
-      {patient.medicalNotes && (
-        <div className="mt-3 rounded-xl bg-sky-50/70 border border-sky-100 p-2.5 text-xs text-sky-950">
-          <p className="text-[10px] font-semibold text-sky-700 uppercase tracking-wider">
-            Catatan Klinis
-          </p>
-          <p className="mt-0.5 text-neutral-800">{patient.medicalNotes}</p>
-        </div>
-      )}
-
-      {/* Alergi & Komorbid */}
-      <div className="mt-3.5 grid gap-2.5 sm:grid-cols-2 text-xs">
-        <div
-          className={`rounded-xl p-3 ${
-            allergy
-              ? 'bg-rose-50/90 text-rose-900 ring-1 ring-rose-200/70'
-              : 'bg-neutral-50 text-neutral-700'
-          }`}
-        >
-          <div className="flex items-center gap-1.5 font-medium">
-            {allergy && <AlertIcon width={13} height={13} className="text-rose-600" />}
-            <span className={allergy ? 'text-rose-700' : 'text-neutral-400'}>
-              Alergi
-            </span>
-          </div>
-          <p className="mt-0.5 font-medium">{patient.allergies}</p>
-        </div>
-
-        <div className="rounded-xl bg-neutral-50 p-3 text-neutral-700">
-          <p className="text-neutral-400">Penyakit Penyerta</p>
-          <p className="mt-0.5 font-medium text-neutral-900">
-            {patient.chronicConditions}
-          </p>
-        </div>
-      </div>
-
-      {/* Riwayat Pemeriksaan + Tombol Tambah Catatan Dokter (ICD-10) & SATUSEHAT FHIR */}
-      <div className="mt-4 border-t border-neutral-100 pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-semibold text-neutral-900">
-            Riwayat Pemeriksaan ({patient.medicalHistory.length})
-          </p>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setShowFhirPreview((v) => !v)}
-              className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50/70 px-2.5 py-1 text-[11px] font-medium text-emerald-800 transition hover:bg-emerald-100"
-            >
-              <FileTextIcon width={12} height={12} />
-              {showFhirPreview ? 'Tutup FHIR R4' : 'SATUSEHAT FHIR'}
-            </button>
-
-            {allowDoctorForm && (
-              <button
-                type="button"
-                onClick={() => setIsAddingNote((v) => !v)}
-                className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 transition hover:bg-neutral-50"
-              >
-                <PlusIcon width={12} height={12} />
-                {isAddingNote ? 'Tutup Form' : 'Catat Diagnosis ICD-10'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Panel Preview & Ekspor HL7 FHIR R4 Bundle SATUSEHAT Kemenkes */}
-        {showFhirPreview && fhirBundle && (
-          <div className="mt-3 rounded-xl border border-emerald-200 bg-neutral-950 p-3.5 text-xs text-neutral-100">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2.5">
-              <div>
-                <span className="inline-flex items-center gap-1.5 font-mono text-[11px] font-bold text-emerald-400">
-                  HL7 FHIR R4 Transaction Bundle · SATUSEHAT Kemenkes RI
-                </span>
-                <p className="text-[11px] text-neutral-400">
-                  Terdiri dari Resource Patient (IHS/NIK), Consent (UU PDP), Encounter (AMB), & Condition (ICD-10)
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => downloadSatusehatFhirJson(patient)}
-                className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1 text-[11px] font-semibold text-neutral-950 transition hover:bg-emerald-400"
-              >
-                <DownloadIcon width={12} height={12} />
-                Unduh JSON FHIR
-              </button>
-            </div>
-            <pre className="mt-2.5 max-h-56 overflow-auto rounded-lg bg-black/50 p-2.5 font-mono text-[10px] leading-relaxed text-emerald-300">
-              {JSON.stringify(fhirBundle, null, 2)}
-            </pre>
-          </div>
-        )}
-
-        {/* Form Tambah Riwayat Pemeriksaan Dokter Berbasis Pencarian Kode ICD-10 */}
-        {allowDoctorForm && isAddingNote && (
-          <form
-            onSubmit={(e) => void handleSaveDoctorNote(e)}
-            className="mt-3 space-y-3 rounded-xl border border-neutral-200 bg-neutral-50/90 p-3.5 text-xs"
-          >
-            <div className="flex items-center justify-between">
-              <p className="font-semibold text-neutral-900">
-                Input Pemeriksaan Dokter (Standar Pengkodean WHO ICD-10)
-              </p>
-              <span className="rounded bg-neutral-200/80 px-2 py-0.5 font-mono text-[10px] font-semibold text-neutral-700">
-                ICD-10 · INA-CBGs
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                value={notePoli}
-                onChange={(e) => setNotePoli(e.target.value)}
-                placeholder="Poliklinik"
-                className="h-8 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs outline-none focus:border-neutral-900"
-              />
-              <input
-                value={noteDoctor}
-                onChange={(e) => setNoteDoctor(e.target.value)}
-                placeholder="Nama Dokter (DPJP)"
-                className="h-8 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs outline-none focus:border-neutral-900"
-              />
-            </div>
-
-            {/* Pencarian & Pemilih Kode Diagnosis ICD-10 */}
-            <div className="relative space-y-1.5">
-              <label className="block text-[11px] font-medium text-neutral-600">
-                Cari & Pilih Kode Diagnosis ICD-10 *
-              </label>
-              <div className="relative flex items-center">
-                <SearchIcon
-                  width={13}
-                  height={13}
-                  className="pointer-events-none absolute left-2.5 text-neutral-400"
-                />
-                <input
-                  value={icdSearchQuery}
-                  onFocus={() => setShowIcdDropdown(true)}
-                  onChange={(e) => {
-                    setIcdSearchQuery(e.target.value);
-                    setSelectedIcd(null);
-                    setShowIcdDropdown(true);
-                  }}
-                  placeholder="Ketik kode (mis: I10, E11.9, J45.9, K29.7) atau nama diagnosis…"
-                  className="h-8 w-full rounded-lg border border-neutral-200 bg-white pl-8 pr-20 text-xs outline-none focus:border-neutral-900"
-                />
-                {selectedIcd && (
-                  <span className="absolute right-2 rounded bg-emerald-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-800">
-                    {selectedIcd.code} ✓
-                  </span>
-                )}
-              </div>
-
-              {showIcdDropdown && (
-                <div className="max-h-48 overflow-y-auto rounded-xl border border-neutral-200 bg-white p-1 shadow-md">
-                  {icdSuggestions.length === 0 ? (
-                    <p className="px-3 py-2 text-[11px] text-neutral-400">
-                      Tidak ditemukan kode ICD-10 yang cocok. Coba kata kunci lain.
-                    </p>
-                  ) : (
-                    icdSuggestions.map((entry) => {
-                      const isPoliRecommended = entry.poliklinik === notePoli;
-                      return (
-                        <button
-                          key={entry.code}
-                          type="button"
-                          onClick={() => handleSelectIcdEntry(entry)}
-                          className="flex w-full items-start justify-between gap-2 rounded-lg px-2.5 py-2 text-left transition hover:bg-neutral-100"
-                        >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="rounded bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white">
-                                {entry.code}
-                              </span>
-                              <span className="truncate font-semibold text-neutral-900">
-                                {entry.nameId}
-                              </span>
-                            </div>
-                            <p className="mt-0.5 truncate text-[10px] italic text-neutral-500">
-                              WHO: {entry.nameEn}
-                            </p>
-                          </div>
-                          <span
-                            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                              isPoliRecommended
-                                ? 'bg-emerald-50 text-emerald-700'
-                                : 'bg-neutral-100 text-neutral-500'
-                            }`}
-                          >
-                            {entry.poliklinik}
-                          </span>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              )}
-
-              {selectedIcd && (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 text-[11px] text-emerald-950">
-                  <span>
-                    Terpilih: <strong>{formatIcd10Diagnosis(selectedIcd)}</strong>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setTreatment(selectedIcd.defaultTreatment)}
-                    className="font-semibold text-emerald-700 underline hover:text-emerald-950"
-                  >
-                    Isi Resep Standar
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <input
-              value={diagnosisCustomSuffix}
-              onChange={(e) => setDiagnosisCustomSuffix(e.target.value)}
-              placeholder="Keterangan klinis tambahan opsional (mis: Tekanan Darah 150/95 mmHg)"
-              className="h-8 w-full rounded-lg border border-neutral-200 bg-white px-2.5 text-xs outline-none focus:border-neutral-900"
-            />
-
-            <input
-              value={treatment}
-              onChange={(e) => setTreatment(e.target.value)}
-              placeholder="Tindakan & Resep Obat (contoh: Amlodipine 5mg 1x1, Diet rendah garam) *"
-              className="h-8 w-full rounded-lg border border-neutral-200 bg-white px-2.5 text-xs outline-none focus:border-neutral-900"
-              required
-            />
-
-            {noteError && (
-              <p className="text-[11px] font-medium text-rose-600">{noteError}</p>
-            )}
-
-            <div className="flex justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAddingNote(false);
-                  setShowIcdDropdown(false);
-                }}
-                className="rounded-full px-3 py-1 text-xs text-neutral-500 hover:text-neutral-800"
-              >
-                Batal
-              </button>
-              <button
-                type="submit"
-                disabled={isSavingNote}
-                className="rounded-full bg-neutral-900 px-3.5 py-1 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-50"
-              >
-                {isSavingNote ? 'Menyimpan…' : 'Simpan Diagnosis ICD-10'}
-              </button>
-            </div>
-          </form>
-        )}
-
-        {patient.medicalHistory.length === 0 ? (
-          <p className="mt-3 text-xs text-neutral-400">
-            Belum ada riwayat kunjungan.
-          </p>
-        ) : (
-          <ol className="mt-3 max-h-48 space-y-3 overflow-y-auto border-l border-neutral-200 pl-3.5 pr-1">
-            {patient.medicalHistory.map((item, idx) => {
-              const parsedIcd = parseIcd10FromText(item.diagnosis);
-              return (
-                <li key={`${item.date}-${idx}`} className="relative text-xs">
-                  <span className="absolute -left-[18px] top-1.5 h-1.5 w-1.5 rounded-full bg-neutral-400" />
-                  <div className="flex items-center gap-2">
-                    <p className="text-[11px] text-neutral-400">
-                      {item.date} · {item.poliklinik}
-                    </p>
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-neutral-700">
-                      ICD-10: {parsedIcd.code}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 font-medium text-neutral-900">
-                    {item.diagnosis}
-                  </p>
-                  <p className="text-neutral-600">{item.treatment}</p>
-                  <p className="text-[11px] text-neutral-400">{item.doctor}</p>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Status Sinkronisasi Antrean (polling GET /api/queue)                       */
-/* -------------------------------------------------------------------------- */
-
-const QUEUE_POLL_INTERVAL_MS = 3500;
-
-type QueueSyncStatus = 'connecting' | 'live' | 'offline';
-
-interface QueueSyncState {
-  readonly status: QueueSyncStatus;
-  readonly lastSyncedAt: string | null;
-  readonly error: string | null;
-}
-
-interface QueueNotice {
-  readonly tone: 'info' | 'error';
-  readonly text: string;
-}
-
-function QueueSyncBar({
-  sync,
-  notice,
-  onDismissNotice,
-}: {
-  readonly sync: QueueSyncState;
-  readonly notice: QueueNotice | null;
-  readonly onDismissNotice: () => void;
-}) {
-  const syncedTime = sync.lastSyncedAt
-    ? new Date(sync.lastSyncedAt).toLocaleTimeString('id-ID')
-    : null;
-  const dotClass =
-    sync.status === 'live'
-      ? 'bg-emerald-500'
-      : sync.status === 'connecting'
-        ? 'bg-amber-400'
-        : 'bg-rose-500';
-  const label =
-    sync.status === 'live'
-      ? `Antrean real-time tersinkron${syncedTime ? ` · diperbarui ${syncedTime}` : ''}`
-      : sync.status === 'connecting'
-        ? 'Menghubungkan ke server antrean…'
-        : `Server antrean tidak terjangkau${sync.error ? ` (${sync.error})` : ''} · ${
-            syncedTime ? `menampilkan data terakhir ${syncedTime}` : 'menampilkan data contoh'
-          }`;
-
-  return (
-    <div className="no-print mb-3 flex flex-wrap items-center gap-2 text-[11px]">
-      <span
-        id="queue-sync-status"
-        role="status"
-        aria-live="polite"
-        className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200/80 bg-white px-2.5 py-1 text-neutral-600"
-      >
-        <span className="relative flex h-2 w-2">
-          {sync.status === 'live' && (
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-          )}
-          <span className={`relative inline-flex h-2 w-2 rounded-full ${dotClass}`} />
-        </span>
-        {label}
-      </span>
-      {notice && (
-        <span
-          id="queue-action-notice"
-          role={notice.tone === 'error' ? 'alert' : 'status'}
-          className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 ${
-            notice.tone === 'error'
-              ? 'border border-rose-200 bg-rose-50 text-rose-700'
-              : 'border border-sky-200 bg-sky-50 text-sky-700'
-          }`}
-        >
-          {notice.text}
-          <button
-            type="button"
-            id="queue-action-notice-dismiss"
-            onClick={onDismissNotice}
-            className="font-semibold opacity-70 transition hover:opacity-100"
-            aria-label="Tutup notifikasi antrean"
-          >
-            ×
-          </button>
-        </span>
-      )}
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Komponen Utama Pemindai & Antrean                                         */
-/* -------------------------------------------------------------------------- */
-
-function AttendanceCamera({
-  initialRoleMode = 'doctor',
-}: {
-  readonly initialRoleMode?: ViewRoleMode;
-} = {}) {
+function AttendanceCamera({ onGoToRegister }: AttendanceCameraProps = {}) {
   const frame = useFrameCapture();
   const verification = useAttendanceVerification();
-  const [roleMode, setRoleMode] = useState<ViewRoleMode>(initialRoleMode);
-
-  useEffect(() => {
-    setRoleMode(initialRoleMode);
-  }, [initialRoleMode]);
   const [poli, setPoli] = useState<string>(AUTO_POLI);
   const [queues, setQueues] = useState<readonly PoliQueueSnapshot[]>(
     DEFAULT_POLI_QUEUES,
   );
-  const [monitorPoli, setMonitorPoli] = useState<string>('Poli Penyakit Dalam');
+  const [monitorPoli, setMonitorPoli] = useState<string>('Poli Umum');
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [lastSpokenText, setLastSpokenText] = useState<string | null>(null);
-  const [queueSync, setQueueSync] = useState<QueueSyncState>({
-    status: 'connecting',
-    lastSyncedAt: null,
-    error: null,
-  });
-  const [queueNotice, setQueueNotice] = useState<QueueNotice | null>(null);
+  const [manualRmQuickInput, setManualRmQuickInput] = useState(DEMO_BYPASS_RM);
 
-  // Nomor urut request antrean: respons yang lebih lama dari state terakhir yang
-  // diterapkan dibuang, sehingga hasil polling lama tidak menimpa hasil aksi petugas.
   const queueRequestSeqRef = useRef(0);
   const appliedQueueSeqRef = useRef(0);
   const pollInFlightRef = useRef(false);
 
-  // State Pencarian Manual Fallback (NIK / No. RM / Nama)
-  const [showManualSearch, setShowManualSearch] = useState(false);
-  const [manualQuery, setManualQuery] = useState('');
-
   const camera = useWebCamera({
-    enabled: roleMode !== 'tv' && frame.image === null,
+    enabled: frame.image === null,
   });
 
   const applyQueueSnapshot = useCallback(
-    (
-      seq: number,
-      nextQueues: readonly PoliQueueSnapshot[],
-      updatedAt: string | undefined,
-    ): boolean => {
+    (seq: number, nextQueues: readonly PoliQueueSnapshot[]): boolean => {
       if (seq < appliedQueueSeqRef.current) return false;
       appliedQueueSeqRef.current = seq;
       if (nextQueues.length > 0) {
         setQueues(nextQueues);
       }
-      setQueueSync({
-        status: 'live',
-        lastSyncedAt: updatedAt ?? new Date().toISOString(),
-        error: null,
-      });
       return true;
     },
     [],
   );
 
-  /**
-   * GET /api/queue. Polling latar (background) dilewati bila masih ada polling
-   * yang berjalan; refresh eksplisit (setelah verifikasi) selalu dijalankan.
-   */
   const refreshQueues = useCallback(
     async (options: { readonly background?: boolean } = {}) => {
       const isBackground = options.background === true;
@@ -1752,10 +581,7 @@ function AttendanceCamera({
       try {
         const result = await fetchQueueState();
         if (result.ok) {
-          applyQueueSnapshot(seq, result.data.queues, result.data.updatedAt);
-        } else if (seq >= appliedQueueSeqRef.current) {
-          // Data terakhir tetap ditampilkan; hanya status koneksi yang berubah.
-          setQueueSync((prev) => ({ ...prev, status: 'offline', error: result.error }));
+          applyQueueSnapshot(seq, result.data.queues);
         }
       } finally {
         if (isBackground) pollInFlightRef.current = false;
@@ -1766,19 +592,12 @@ function AttendanceCamera({
 
   useEffect(() => {
     const poll = () => {
-      if (document.hidden) return; // hemat jaringan saat tab tidak terlihat
+      if (document.hidden) return;
       void refreshQueues({ background: true });
-    };
-    const handleVisibility = () => {
-      if (!document.hidden) void refreshQueues({ background: true });
     };
     poll();
     const id = window.setInterval(poll, QUEUE_POLL_INTERVAL_MS);
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      window.clearInterval(id);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
+    return () => window.clearInterval(id);
   }, [refreshQueues]);
 
   const issueTicket = async (image: string) => {
@@ -1794,21 +613,6 @@ function AttendanceCamera({
     }
   };
 
-  const handleManualLookup = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!manualQuery.trim()) return;
-    const ok = await verification.lookupManual(
-      manualQuery.trim(),
-      poli === AUTO_POLI ? undefined : poli,
-    );
-    if (ok) {
-      setManualQuery('');
-      setShowManualSearch(false);
-      await refreshQueues();
-    }
-  };
-
-  /** Fallback No. RM manual dari kartu kanan (pasien tidak dapat dipindai). */
   const handleManualRmLookup = async (noRm: string): Promise<boolean> => {
     const ok = await verification.lookupManual(
       noRm,
@@ -1822,15 +626,14 @@ function AttendanceCamera({
 
   const detection = useFaceDetection({
     videoRef: camera.videoRef,
-    enabled:
-      roleMode !== 'tv' && camera.status === 'ready' && frame.image === null,
+    enabled: camera.status === 'ready' && frame.image === null,
     onHoldComplete: captureAndIssue,
   });
 
   const hasFace = detection.trackingBox !== null;
 
   useEffect(() => {
-    if (roleMode === 'tv' || camera.status !== 'ready' || !hasFace) {
+    if (camera.status !== 'ready' || !hasFace) {
       return undefined;
     }
     const identify = () => {
@@ -1843,7 +646,6 @@ function AttendanceCamera({
     const id = window.setInterval(identify, 2500);
     return () => window.clearInterval(id);
   }, [
-    roleMode,
     camera.status,
     camera.videoRef,
     hasFace,
@@ -1866,32 +668,21 @@ function AttendanceCamera({
     queues[0] ??
     DEFAULT_POLI_QUEUES[0];
 
-  /**
-   * Aksi panel petugas → POST /api/queue/action.
-   * 'call_next' = NEXT (Panggil Berikutnya), 'complete' = FINISH (Selesai).
-   */
   const handleQueueAction = async (
     targetPoli: string,
     action: QueueControlAction,
   ) => {
     setIsAdvancing(true);
-    setQueueNotice(null);
     try {
       const seq = ++queueRequestSeqRef.current;
       const result = await sendQueueAction(targetPoli, action);
       if (!result.ok) {
-        setQueueNotice({ tone: 'error', text: `Aksi antrean gagal: ${result.error}` });
         return;
       }
-
       const { data } = result;
-      applyQueueSnapshot(seq, data.queues, data.updatedAt);
+      applyQueueSnapshot(seq, data.queues);
 
       if (!data.changed) {
-        setQueueNotice({
-          tone: 'info',
-          text: data.message || 'Tidak ada perubahan pada antrean.',
-        });
         return;
       }
 
@@ -1914,14 +705,6 @@ function AttendanceCamera({
         });
         setLastSpokenText(sentence);
       }
-    } catch (err) {
-      setQueueNotice({
-        tone: 'error',
-        text:
-          err instanceof Error
-            ? `Aksi antrean gagal: ${err.message}`
-            : 'Aksi antrean gagal diproses.',
-      });
     } finally {
       setIsAdvancing(false);
     }
@@ -1935,290 +718,207 @@ function AttendanceCamera({
   };
 
   const statusText = (() => {
+    if (verification.isSubmitting) {
+      return 'Mengekstraksi Vektor Biometrik...';
+    }
     if (frame.image || verification.feedback?.person) {
-      if (verification.isSubmitting) return 'Memverifikasi identitas…';
       if (error) return error;
-      if (patient?.alreadyQueued || patient?.queueTicket?.isExistingTicket) {
-        return `Antrean aktif sudah ada (${patient.queueTicket?.queueNumber}) · Tidak dobel order`;
+      if (patient?.queueTicket) {
+        return 'Identifikasi Berhasil. Jarak Cosine Similarity memenuhi threshold.';
       }
-      if (patient?.queueTicket) return 'Terverifikasi · Tiket antrean siap';
-      return 'Foto wajah berhasil diambil';
+      return 'Citra wajah berhasil diakuisisi.';
     }
     if (error) return error;
-    if (camera.status !== 'ready') return 'Menyiapkan kamera…';
-    if (!hasFace) return 'Posisikan wajah menghadap kamera';
-    if (detection.faceStatus === 'valid') return 'Tahan sebentar untuk memindai…';
+    if (camera.status !== 'ready') return 'Mengekstraksi Vektor Biometrik...';
+    if (!hasFace) return 'Arahkan wajah ke area sensor kamera';
+    if (detection.faceStatus === 'valid') {
+      return 'Mengekstraksi Vektor Biometrik...';
+    }
     return detection.guidance;
   })();
 
-  const allowStaffControls = roleMode === 'doctor';
+  const activeEndpointUrl = resolveApiEndpoint('verify') || 'Belum dikonfigurasi';
 
   return (
     <div>
-      {/* Struk Cetak Thermal 58mm/80mm (Hanya muncul saat window.print) */}
-      {patient && (
-        <ThermalPrintReceipt
-          patient={patient}
-          livePoliQueue={activePoliQueue}
-        />
-      )}
-
-      {/* Selector Mode Tampilan Peran (Role-Based View Switcher) */}
-      {initialRoleMode !== 'tv' && (
-<div className="no-print mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-neutral-200/80 bg-white px-4 py-2.5">
-        <div className="flex items-center gap-2 text-xs text-neutral-500">
-          <span className="font-semibold text-neutral-800">Mode Terminal:</span>
-          <span>
-            {roleMode === 'kiosk'
-              ? 'Anjungan Mandiri Pasien (Tanpa Tombol Admin)'
-              : roleMode === 'doctor'
-                ? 'Meja Dokter & Petugas (Kontrol Panggilan + Input SOAP)'
-                : 'Layar TV Ruang Tunggu Poliklinik'}
+      {/* Indikator Endpoint Backend Aktif (.env.local VITE_API_URL) */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-neutral-200/80 bg-white px-4 py-2 text-xs text-neutral-600">
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          <span className="font-medium text-neutral-800">
+            Target Endpoint (<code className="font-mono">VITE_API_URL</code>):
           </span>
+          <code className="rounded bg-neutral-100 px-2 py-0.5 font-mono text-[11px] text-neutral-800">
+            {activeEndpointUrl}
+          </code>
         </div>
-
-        <div className="flex items-center gap-1 rounded-full bg-neutral-100 p-1">
-          <button
-            type="button"
-            onClick={() => setRoleMode('kiosk')}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
-              roleMode === 'kiosk'
-                ? 'bg-white text-neutral-900 shadow-sm'
-                : 'text-neutral-600 hover:text-neutral-900'
-            }`}
-          >
-            <ScanIcon width={12} height={12} />
-            Kiosk Pasien
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setRoleMode('doctor')}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
-              roleMode === 'doctor'
-                ? 'bg-white text-neutral-900 shadow-sm'
-                : 'text-neutral-600 hover:text-neutral-900'
-            }`}
-          >
-            <StethoscopeIcon width={12} height={12} />
-            Mode Dokter / Poli
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setRoleMode('tv')}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
-              roleMode === 'tv'
-                ? 'bg-white text-neutral-900 shadow-sm'
-                : 'text-neutral-600 hover:text-neutral-900'
-            }`}
-          >
-            <TvIcon width={12} height={12} />
-            Layar TV Antrean
-          </button>
-        </div>
+        <span className="font-mono text-[11px] text-neutral-400">
+          Threshold Cosine Similarity: 80.0%
+        </span>
       </div>
-      )}
 
-      <QueueSyncBar
-        sync={queueSync}
-        notice={queueNotice}
-        onDismissNotice={() => setQueueNotice(null)}
+      {/* Panel Antrean Poliklinik */}
+      <MinimalQueuePanel
+        queues={queues}
+        activePoliName={effectivePoliName}
+        onSelectPoli={(selected) => setMonitorPoli(selected)}
+        onQueueAction={(target, action) => void handleQueueAction(target, action)}
+        isAdvancing={isAdvancing}
+        lastSpokenText={lastSpokenText}
       />
 
-      {roleMode === 'tv' ? (
-        <WaitingRoomTvDisplay
-          queues={queues}
-          activePoliName={effectivePoliName}
-          onSelectPoli={(selected) => setMonitorPoli(selected)}
-          onQueueAction={(target, action) =>
-            void handleQueueAction(target, action)
-          }
-          isAdvancing={isAdvancing}
-          lastSpokenText={lastSpokenText}
-        />
-      ) : (
-        <>
-          {/* Panel Panggil Antrean + Suara TTS */}
-          <MinimalQueuePanel
-            queues={queues}
-            activePoliName={effectivePoliName}
-            onSelectPoli={(selected) => setMonitorPoli(selected)}
-            onQueueAction={(target, action) =>
-              void handleQueueAction(target, action)
-            }
-            isAdvancing={isAdvancing}
-            lastSpokenText={lastSpokenText}
-            allowStaffControls={allowStaffControls}
-          />
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-start">
+        {/* Kolom Kiri: (a) Pindai Wajah & (c) Bypass Cepat No. RM */}
+        <section className="rounded-2xl border border-neutral-200/80 bg-white p-4 space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-neutral-900">
+              Pindai Wajah (Ekstraksi Vektor Biometrik)
+            </span>
 
-          <div className="no-print grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] items-start">
-            {/* Kolom Kiri: Kamera Biometrik + Fallback Manual NIK/No.RM */}
-            <section className="rounded-2xl border border-neutral-200/80 bg-white p-4 space-y-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-neutral-900">
-                  Kamera Pemindai Wajah
-                </span>
-
-                <div className="flex items-center gap-2">
-                  <label htmlFor="poli-select" className="text-xs text-neutral-500">
-                    Poli:
-                  </label>
-                  <select
-                    id="poli-select"
-                    value={poli}
-                    onChange={(e) => {
-                      setPoli(e.target.value);
-                      if (e.target.value !== AUTO_POLI) {
-                        setMonitorPoli(e.target.value);
-                      }
-                    }}
-                    className="h-8 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-medium text-neutral-800 outline-none transition focus:border-neutral-900 focus:bg-white"
-                  >
-                    <option value={AUTO_POLI}>Otomatis (Sesuai Riwayat)</option>
-                    {POLIKLINIK_LIST.map((p) => (
-                      <option key={p} value={p}>
-                        {p}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <CameraView
-                camera={camera}
-                detection={detection}
-                capturedImage={frame.image}
-                isFlashing={frame.isFlashing}
-                faceLabel={live ? live.fullName : null}
-                faceSubLabel={live ? `${live.noRm} · ${live.poliklinik}` : null}
-                faceAlert={live ? hasRealAllergy(live.allergies) : false}
+            <div className="flex items-center gap-2">
+              <label htmlFor="poli-select" className="text-xs text-neutral-500">
+                Poli:
+              </label>
+              <select
+                id="poli-select"
+                value={poli}
+                onChange={(e) => {
+                  setPoli(e.target.value);
+                  if (e.target.value !== AUTO_POLI) {
+                    setMonitorPoli(e.target.value);
+                  }
+                }}
+                className="h-8 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-medium text-neutral-800 outline-none transition focus:border-neutral-900 focus:bg-white"
               >
-                {verification.isSubmitting && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/55 backdrop-blur-sm">
-                    <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                    <p className="text-xs font-medium text-white">
-                      Memverifikasi data pasien & menerbitkan antrean…
-                    </p>
-                  </div>
-                )}
-              </CameraView>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`h-2 w-2 rounded-full ${
-                      error
-                        ? 'bg-rose-500'
-                        : hasFace || frame.image || patient
-                          ? 'bg-emerald-500'
-                          : 'bg-neutral-300'
-                    }`}
-                  />
-                  <span
-                    className={`text-xs ${
-                      error ? 'font-medium text-rose-600' : 'text-neutral-600'
-                    }`}
-                  >
-                    {statusText}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowManualSearch((v) => !v)}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-600 transition hover:bg-neutral-50"
-                  >
-                    <SearchIcon width={12} height={12} />
-                    <span>{showManualSearch ? 'Tutup Cari' : 'Cari NIK / RM'}</span>
-                  </button>
-
-                  {frame.image || patient ? (
-                    <button
-                      type="button"
-                      onClick={handleNext}
-                      disabled={verification.isSubmitting}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-50"
-                    >
-                      <RefreshIcon width={13} height={13} />
-                      Pindai Ulang
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={captureAndIssue}
-                      disabled={camera.status !== 'ready'}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
-                    >
-                      <ScanIcon width={13} height={13} />
-                      Ambil Antrean
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Fallback Pencarian Manual via NIK / No. RM / Nama */}
-              {showManualSearch && (
-                <form
-                  onSubmit={(e) => void handleManualLookup(e)}
-                  className="flex items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 p-2.5"
-                >
-                  <SearchIcon
-                    width={14}
-                    height={14}
-                    className="ml-1.5 shrink-0 text-neutral-400"
-                  />
-                  <input
-                    value={manualQuery}
-                    onChange={(e) => setManualQuery(e.target.value)}
-                    placeholder="Ketik No. RM (mis: RM-2026-001), NIK, atau Nama Pasien…"
-                    className="h-8 flex-1 bg-transparent text-xs text-neutral-900 outline-none placeholder:text-neutral-400"
-                  />
-                  <button
-                    type="submit"
-                    disabled={verification.isSubmitting || !manualQuery.trim()}
-                    className="h-8 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
-                  >
-                    Cari & Ambil Tiket
-                  </button>
-                </form>
-              )}
-            </section>
-
-            {/* Kolom Kanan: Tiket Antrean & Rekam Medis */}
-            <section className="space-y-4">
-              {patient ? (
-                <>
-                  <QueueTicketCard
-                    patient={patient}
-                    livePoliQueue={activePoliQueue}
-                    onQueueAction={(target, action) =>
-                      void handleQueueAction(target, action)
-                    }
-                    isAdvancing={isAdvancing}
-                    onNext={handleNext}
-                    allowStaffControls={allowStaffControls}
-                    capturedImage={frame.image}
-                  />
-                  <PatientDetails
-                    patient={patient}
-                    onAddHistory={verification.appendMedicalHistory}
-                    allowDoctorForm={allowStaffControls}
-                  />
-                </>
-              ) : (
-                <EmptyState
-                  activePoliQueue={activePoliQueue}
-                  onManualRmSubmit={handleManualRmLookup}
-                  isSubmitting={verification.isSubmitting}
-                  lookupError={error}
-                />
-              )}
-            </section>
+                <option value={AUTO_POLI}>Otomatis (Sesuai Profil)</option>
+                {POLIKLINIK_LIST.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-        </>
-      )}
+
+          <CameraView
+            camera={camera}
+            detection={detection}
+            capturedImage={frame.image}
+            isFlashing={frame.isFlashing}
+            faceLabel={live ? live.fullName : null}
+            faceSubLabel={
+              live
+                ? `${live.noRm} · Cosine ${live.similarity.toFixed(1)}%`
+                : null
+            }
+          >
+            {verification.isSubmitting && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/60 backdrop-blur-sm">
+                <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                <p className="text-xs font-medium text-white">
+                  Mengekstraksi Vektor Biometrik...
+                </p>
+              </div>
+            )}
+          </CameraView>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  error
+                    ? 'bg-rose-500'
+                    : hasFace || frame.image || patient
+                      ? 'bg-emerald-500'
+                      : 'bg-neutral-300'
+                }`}
+              />
+              <span
+                className={`text-xs ${
+                  error ? 'font-medium text-rose-600' : 'text-neutral-600'
+                }`}
+              >
+                {statusText}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {frame.image || patient ? (
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  disabled={verification.isSubmitting}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-50"
+                >
+                  <RefreshIcon width={13} height={13} />
+                  Pindai Ulang
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={captureAndIssue}
+                  disabled={camera.status !== 'ready' || verification.isSubmitting}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-4 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
+                >
+                  <ScanIcon width={13} height={13} />
+                  Pindai Wajah
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Baris Input Manual No. RM Cepat (Selalu Tersedia) */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const norm = normalizeRmInput(manualRmQuickInput);
+              if (norm) void handleManualRmLookup(norm);
+            }}
+            className="flex flex-wrap items-center gap-2 rounded-xl border border-neutral-200/80 bg-neutral-50 p-2.5"
+          >
+            <span className="text-[11px] font-medium text-neutral-600">
+              Input Manual No. RM:
+            </span>
+            <input
+              value={manualRmQuickInput}
+              onChange={(e) => setManualRmQuickInput(e.target.value)}
+              placeholder="RM-2026-501B"
+              className="h-7 min-w-[130px] flex-1 rounded-lg border border-neutral-200 bg-white px-2.5 font-mono text-xs uppercase text-neutral-900 outline-none focus:border-neutral-900"
+            />
+            <button
+              type="submit"
+              disabled={verification.isSubmitting || !manualRmQuickInput.trim()}
+              className="h-7 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition hover:bg-neutral-800 disabled:opacity-40"
+            >
+              Bypass No. RM
+            </button>
+          </form>
+        </section>
+
+        {/* Kolom Kanan: Hasil Pencocokan Vektor & Nomor Antrean */}
+        <section className="space-y-4">
+          {patient ? (
+            <BiometricQueueResultCard
+              patient={patient}
+              feedbackMessage={verification.feedback?.message}
+              livePoliQueue={activePoliQueue}
+              onQueueAction={(target, action) =>
+                void handleQueueAction(target, action)
+              }
+              isAdvancing={isAdvancing}
+              onNext={handleNext}
+            />
+          ) : (
+            <ManualRmFallbackPanel
+              activePoliQueue={activePoliQueue}
+              onManualRmSubmit={handleManualRmLookup}
+              onGoToRegister={onGoToRegister}
+              isSubmitting={verification.isSubmitting}
+              lookupError={error}
+            />
+          )}
+        </section>
+      </div>
     </div>
   );
 }

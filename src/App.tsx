@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react';
 import AttendanceCamera from './components/AttendanceCamera';
 import EvaluationDashboardPage from './components/EvaluationDashboardPage';
 import FaceRegistrationPage from './components/FaceRegistrationPage';
-import { ChartBarIcon, ScanIcon, TvIcon, UserPlusIcon } from './components/icons';
+import { ChartBarIcon, ScanIcon, UserPlusIcon } from './components/icons';
+import { getConfiguredApiBaseUrl } from './lib/hospital';
 
-type ActivePage = 'attendance' | 'tv-display' | 'register' | 'analytics';
+type ActivePage = 'attendance' | 'register' | 'analytics';
 
 function App() {
   const [activePage, setActivePage] = useState<ActivePage>('attendance');
   const [currentTime, setCurrentTime] = useState<string>('');
+  const apiBaseUrl = getConfiguredApiBaseUrl();
 
   useEffect(() => {
     const updateTime = () => {
@@ -27,40 +29,35 @@ function App() {
 
   const pageHeader = {
     attendance: {
-      title: 'Verifikasi Wajah & Antrean Poliklinik',
+      title: 'SIMRS Biometric Queue — Pindai Wajah & Bypass Manual No. RM',
       subtitle:
-        'Pindai wajah pasien untuk membuka rekam medis, menerbitkan tiket antrean, atau menginput diagnosis ICD-10.',
-    },
-    'tv-display': {
-      title: 'Layar Display TV Antrean Ruang Tunggu',
-      subtitle:
-        'Tampilan monitor publik real-time untuk 10 poliklinik rawat jalan dengan panggilan suara otomatis (TTS Bahasa Indonesia).',
+        'Ekstraksi vektor biometrik FaceNet (512-D) dan pencocokan Cosine Similarity untuk penerbitan nomor antrean poliklinik real-time.',
     },
     register: {
-      title: 'Pendaftaran Pasien Baru (Multi-Pose & UU PDP Consent)',
+      title: 'Daftar Pasien Baru (Face Enrollment)',
       subtitle:
-        'Rekam biometrik wajah hingga 3 sudut pose beserta persetujuan pemrosesan data pribadi spesifik (UU PDP No. 27/2022).',
+        'Akuisisi citra wajah subjek baru untuk ekstraksi dan registrasi embedding vektor biometrik pada basis data.',
     },
     analytics: {
-      title: 'Evaluasi Biometrik, Arsitektur SATUSEHAT FHIR & Log Kunjungan',
+      title: 'Evaluasi Akurasi Cosine Similarity, Latensi (Cold/Warm Start) & Biaya Cloud',
       subtitle:
-        'Metrik pengujian akurasi algoritma, status database SQLite, interoperabilitas HL7 FHIR R4, dan riwayat antrean.',
+        'Testbed komparatif arsitektur Serverless (AWS Lambda) vs Dedicated Server (Local/EC2) untuk pengujian beban JMeter/Artillery.',
     },
   }[activePage];
 
   return (
     <div className="min-h-screen bg-[#fafafa] text-neutral-900 antialiased">
-      {/* Header Minimalis */}
+      {/* Header SIMRS Biometric Queue */}
       <header className="no-print sticky top-0 z-30 border-b border-neutral-200/80 bg-white/85 backdrop-blur-md">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-5 py-3.5 sm:px-8">
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-xs font-semibold tracking-tight text-white">
-              RS
+              SB
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold tracking-tight text-neutral-900">
-                  SIMRS Biometrik
+                  SIMRS Biometric Queue
                 </span>
                 {currentTime && (
                   <span className="hidden sm:inline-block text-xs text-neutral-400">
@@ -69,13 +66,14 @@ function App() {
                 )}
               </div>
               <p className="text-[11px] text-neutral-500">
-                Identifikasi Wajah, Antrean, ICD-10 & SATUSEHAT FHIR R4
+                FaceNet Cosine Similarity · Endpoint:{' '}
+                <code className="font-mono text-neutral-700">{apiBaseUrl}</code>
               </p>
             </div>
           </div>
 
           <nav
-            aria-label="Navigasi layanan"
+            aria-label="Navigasi testbed biometrik"
             className="flex flex-wrap items-center gap-1 rounded-full bg-neutral-100 p-1"
           >
             <button
@@ -88,19 +86,7 @@ function App() {
               }`}
             >
               <ScanIcon width={13} height={13} />
-              Pasien Lama
-            </button>
-            <button
-              type="button"
-              onClick={() => setActivePage('tv-display')}
-              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
-                activePage === 'tv-display'
-                  ? 'bg-white text-neutral-900 shadow-sm'
-                  : 'text-neutral-600 hover:text-neutral-900'
-              }`}
-            >
-              <TvIcon width={13} height={13} />
-              Layar TV Ruang Tunggu
+              Pindai Wajah
             </button>
             <button
               type="button"
@@ -112,7 +98,7 @@ function App() {
               }`}
             >
               <UserPlusIcon width={13} height={13} />
-              Pasien Baru
+              Daftar Pasien Baru
             </button>
             <button
               type="button"
@@ -124,7 +110,7 @@ function App() {
               }`}
             >
               <ChartBarIcon width={13} height={13} />
-              Evaluasi & SATUSEHAT
+              Evaluasi Latensi & Biaya
             </button>
           </nav>
         </div>
@@ -148,7 +134,7 @@ function App() {
               onClick={() => setActivePage('register')}
               className="rounded-full border border-neutral-200 bg-white px-4 py-1.5 text-xs font-medium text-neutral-700 transition hover:border-neutral-300 hover:bg-neutral-50"
             >
-              Belum terdaftar? Daftar baru →
+              + Daftar Pasien Baru →
             </button>
           ) : (
             <button
@@ -156,16 +142,13 @@ function App() {
               onClick={() => setActivePage('attendance')}
               className="rounded-full border border-neutral-200 bg-white px-4 py-1.5 text-xs font-medium text-neutral-700 transition hover:border-neutral-300 hover:bg-neutral-50"
             >
-              ← Kembali ke pemindai
+              ← Kembali ke Pindai Wajah
             </button>
           )}
         </div>
 
         {activePage === 'attendance' && (
-          <AttendanceCamera initialRoleMode="doctor" />
-        )}
-        {activePage === 'tv-display' && (
-          <AttendanceCamera initialRoleMode="tv" />
+          <AttendanceCamera onGoToRegister={() => setActivePage('register')} />
         )}
         {activePage === 'register' && (
           <FaceRegistrationPage

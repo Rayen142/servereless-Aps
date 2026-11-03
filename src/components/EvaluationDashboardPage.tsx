@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ENROLLED_PATIENT_PROFILES,
   fetchHospitalAnalytics,
   type HospitalAnalyticsData,
 } from '../lib/hospital';
-import {
-  buildSatusehatFhirBundle,
-  downloadSatusehatFhirJson,
-} from '../lib/satusehat';
 import {
   buildReportCsv,
   buildSummaryCsv,
@@ -39,14 +34,9 @@ import {
   type NetworkEstimate,
 } from './EvaluationScientificPanels';
 import {
-  BiometricStressTestPanel,
-  BiometricXaiInspectorCard,
-} from './BiometricXaiAndStressPanel';
-import {
   AlertIcon,
   CheckIcon,
   DownloadIcon,
-  FileTextIcon,
   RefreshIcon,
   ShieldCheckIcon,
   UsersIcon,
@@ -72,9 +62,6 @@ function EvaluationDashboardPage() {
     'ALL',
   );
   const [logSearch, setLogSearch] = useState('');
-  const [selectedSampleRm, setSelectedSampleRm] = useState<string>(
-    ENROLLED_PATIENT_PROFILES[0]?.noRm ?? 'RM-2026-0001',
-  );
   const [preferredSource, setPreferredSource] = useState<ScientificSource>(
     SCRIPT_SUMMARY ? 'script' : 'backend',
   );
@@ -101,7 +88,7 @@ function EvaluationDashboardPage() {
     } else {
       setData(null);
       setLoadError(
-        'Data evaluasi tidak tersedia — gagal mengambil metrik dari server backend SIMRS. Pastikan server lokal (port 8000) atau endpoint cloud aktif.',
+        'Data evaluasi real-time tidak tersedia — pastikan endpoint backend pada VITE_API_URL aktif.',
       );
     }
     setIsLoading(false);
@@ -114,7 +101,6 @@ function EvaluationDashboardPage() {
 
   const evalReport = data?.evaluation ?? null;
 
-  /* -------------------- Sumber data ilmiah ternormalisasi -------------------- */
   const dataset: ScientificDataset | null = useMemo(() => {
     const fromScript = SCRIPT_SUMMARY ? datasetFromScript(SCRIPT_SUMMARY) : null;
     const fromBackend =
@@ -165,7 +151,7 @@ function EvaluationDashboardPage() {
       <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-2xl border border-neutral-200/80 bg-white p-8 text-center">
         <span className="h-7 w-7 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-900" />
         <p className="mt-3 text-xs font-medium text-neutral-600">
-          Menghitung metrik evaluasi biometrik & memuat log kunjungan dari database…
+          Mengekstraksi Vektor Biometrik &amp; menghitung metrik latensi/biaya…
         </p>
       </div>
     );
@@ -179,7 +165,6 @@ function EvaluationDashboardPage() {
     caseFilter === 'ALL' ? true : c.type === caseFilter,
   );
 
-  /* ------------------------------ Ekspor CSV ------------------------------ */
   const exportReportCsv = () => {
     if (!dataset) return;
     downloadCsv(`evaluation_report_${fileStamp()}.csv`, buildReportCsv(dataset.cases));
@@ -269,36 +254,8 @@ function EvaluationDashboardPage() {
     );
   });
 
-  const sampleProfile =
-    ENROLLED_PATIENT_PROFILES.find((p) => p.noRm === selectedSampleRm) ??
-    ENROLLED_PATIENT_PROFILES[0];
-
-  const sampleFhirBundle = sampleProfile
-    ? buildSatusehatFhirBundle({
-        personId: sampleProfile.personId,
-        noRm: sampleProfile.noRm,
-        nim: sampleProfile.noRm,
-        nik: sampleProfile.nik,
-        fullName: sampleProfile.fullName,
-        birthDate: sampleProfile.birthDate,
-        gender: sampleProfile.gender,
-        age: sampleProfile.age,
-        bloodType: sampleProfile.bloodType,
-        insurance: sampleProfile.insurance,
-        allergies: sampleProfile.allergies,
-        chronicConditions: sampleProfile.chronicConditions,
-        poliklinik: sampleProfile.poliklinik,
-        dokter: sampleProfile.dokter,
-        medicalNotes: sampleProfile.medicalNotes,
-        medicalHistory: sampleProfile.medicalHistory,
-        similarity: 96.4,
-        consentAccepted: true,
-      })
-    : null;
-
   return (
     <div className="space-y-6">
-      {/* Peringatan Jujur Jika Backend Tidak Tersedia (Tanpa Angka Cadangan Palsu) */}
       {(!evalReport || loadError) && (
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-rose-200 bg-rose-50/90 p-5 text-xs text-rose-950">
           <div className="flex items-start gap-3">
@@ -313,7 +270,7 @@ function EvaluationDashboardPage() {
               </p>
               <p className="mt-0.5 text-rose-800">
                 {loadError ??
-                  'Tidak dapat memuat laporan evaluasi dari server backend. Metrik tidak ditampilkan untuk menjaga integritas data pengujian.'}
+                  'Tidak dapat memuat laporan evaluasi dari server backend.'}
                 {dataset?.source === 'script' &&
                   ' Metrik ilmiah di bawah tetap ditampilkan dari laporan skrip dataset/evaluation_summary.json.'}
               </p>
@@ -343,14 +300,14 @@ function EvaluationDashboardPage() {
               <ShieldCheckIcon width={13} height={13} />
               {dataset?.source === 'script'
                 ? dataset.mode === 'live-api'
-                  ? 'Live API Gateway + Amazon Rekognition'
-                  : 'Simulasi lambda_handler (mock Rekognition)'
-                : 'Ensemble CLAHE + Spatial LBPH + HOG + ORB'}
+                  ? 'Serverless API Gateway + AWS Lambda + Rekognition'
+                  : 'Simulasi lambda_handler (Cosine Similarity)'
+                : 'FaceNet Vector Extraction + Cosine Similarity'}
             </span>
             <span className="rounded-full bg-neutral-100 px-2.5 py-0.5 font-mono text-[11px] font-medium text-neutral-600">
-              RAM Cache:{' '}
+              Vektor Terindeks:{' '}
               {evalReport !== null
-                ? `${evalReport.cachedEnrolledCount} Vektor Wajah`
+                ? `${evalReport.cachedEnrolledCount} Subjek`
                 : 'Data tidak tersedia'}
             </span>
             {data?.database && (
@@ -362,12 +319,12 @@ function EvaluationDashboardPage() {
             )}
           </div>
           <h2 className="mt-2 text-base font-semibold text-neutral-900">
-            Hasil Pengujian Akurasi Biometrik &amp; Performa Sistem
+            Studi Komparatif Latensi (Cold Start / Warm Start) &amp; Biaya Cloud
           </h2>
           <p className="mt-0.5 text-xs text-neutral-500">
             {dataset
-              ? `Pengujian ${cases.length} skenario uji (${positiveCasesCount} subjek terdaftar positif & ${negativeCasesCount} wajah tidak terdaftar negatif) dengan ambang batas kemiripan ${operationalThreshold}%. Sumber: ${dataset.sourceLabel} · ${new Date(dataset.generatedAt).toLocaleString('id-ID')}.`
-              : 'Menunggu koneksi ke layanan evaluasi biometrik atau jalankan `python dataset/test_verify_api.py` untuk menghasilkan laporan.'}
+              ? `Pengujian ${cases.length} sampel (${positiveCasesCount} positif & ${negativeCasesCount} negatif) pada threshold Cosine Similarity ${operationalThreshold}%. Sumber: ${dataset.sourceLabel}.`
+              : 'Menunggu koneksi ke layanan evaluasi biometrik atau jalankan `python dataset/test_verify_api.py`.'}
           </p>
           {SCRIPT_SUMMARY && evalReport && (
             <div
@@ -410,7 +367,6 @@ function EvaluationDashboardPage() {
             type="button"
             onClick={exportReportCsv}
             disabled={cases.length === 0}
-            title="Kolom identik dengan dataset/evaluation_report.csv"
             className="inline-flex h-9 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
           >
             <DownloadIcon width={14} height={14} />
@@ -421,7 +377,6 @@ function EvaluationDashboardPage() {
             type="button"
             onClick={exportSummaryCsv}
             disabled={cases.length === 0}
-            title="Ringkasan metrik, latensi, dan biaya (section,metric,value,unit,notes)"
             className="inline-flex h-9 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
           >
             <DownloadIcon width={14} height={14} />
@@ -432,7 +387,6 @@ function EvaluationDashboardPage() {
             type="button"
             onClick={exportSweepCsv}
             disabled={sweep.length === 0}
-            title="Sensitivitas threshold 75%–99% (FAR vs FRR)"
             className="inline-flex h-9 items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-3.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:opacity-40"
           >
             <DownloadIcon width={14} height={14} />
@@ -451,10 +405,10 @@ function EvaluationDashboardPage() {
               className={isReEvaluating ? 'animate-spin' : ''}
             />
             {isReEvaluating
-              ? 'Menguji Dataset…'
+              ? 'Mengekstraksi Vektor Biometrik…'
               : evalReport
                 ? `Uji Ulang ${evalReport.totalCases} Sampel`
-                : 'Jalankan Pengujian'}
+                : 'Jalankan Benchmark'}
           </button>
         </div>
       </div>
@@ -498,7 +452,7 @@ function EvaluationDashboardPage() {
                     Rincian Sampel Pengujian ({cases.length})
                   </h3>
                   <p className="text-xs text-neutral-500">
-                    Skor terbaik, latensi, hasil aktual & hasil pada ambang {activeThreshold}%
+                    Skor Cosine Similarity, latensi, &amp; klasifikasi pada threshold {activeThreshold}%
                   </p>
                 </div>
 
@@ -531,7 +485,7 @@ function EvaluationDashboardPage() {
                       <th className="px-3 py-2">Kode</th>
                       <th className="px-3 py-2">Subjek Uji</th>
                       <th className="px-3 py-2">Prediksi ID</th>
-                      <th className="px-3 py-2 text-right">Skor</th>
+                      <th className="px-3 py-2 text-right">Cosine Sim.</th>
                       <th className="px-3 py-2 text-right">Latency</th>
                       <th className="px-3 py-2 text-center">Hasil</th>
                       <th className="px-3 py-2 text-center">@{activeThreshold}%</th>
@@ -616,7 +570,7 @@ function EvaluationDashboardPage() {
             onNetworkChange={setNetwork}
           />
 
-          {/* 4. Analisis Efisiensi Biaya Serverless */}
+          {/* 4. Analisis Efisiensi Biaya Serverless vs Dedicated IaaS */}
           <ServerlessCostCard
             inputs={costInputs}
             onChange={setCostOverrides}
@@ -627,28 +581,21 @@ function EvaluationDashboardPage() {
         </>
       )}
 
-      {/* 5. Visualisasi Tahapan Ekstraksi Fitur Wajah (Explainable AI / XAI Inspector) */}
-      <BiometricXaiInspectorCard />
-
-      {/* 6. Simulasi Uji Ketahanan Pencahayaan & Blur (Tanpa CLAHE vs Dengan CLAHE) */}
-      <BiometricStressTestPanel operationalThreshold={operationalThreshold} />
-
-      {/* Diagnostik Database Lokal SQLite */}
+      {/* Diagnostik Database Lokal SQLite (Tanpa Tabel Rekam Medis) */}
       {data?.database && (
         <section className="space-y-2 rounded-2xl border border-neutral-200/80 bg-white p-5 text-xs text-neutral-600">
           <div className="flex items-center justify-between">
             <span className="font-medium text-neutral-700">
-              Database Lokal SQLite (Relational WAL)
+              Skema Basis Data Testbed (SQLite WAL)
             </span>
             <span className="font-mono text-[11px] font-semibold text-emerald-700">
               {data.database.dbPath ?? 'dataset/simrs_biometric.db'}
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-1.5 pt-1 text-[11px] sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-1.5 pt-1 text-[11px] sm:grid-cols-4">
             {(
               [
-                ['Tabel patients', data.database.tables.patients, 'baris'],
-                ['medical_records', data.database.tables.medical_records, 'baris'],
+                ['Tabel patients (Subjek)', data.database.tables.patients, 'baris'],
                 ['attendance_logs', data.database.tables.attendance_logs, 'baris'],
                 ['poli_queues', data.database.tables.poli_queues, 'poli'],
                 ['queue_slots (Aktif)', data.database.tables.active_queue_slots, 'slot'],
@@ -668,157 +615,18 @@ function EvaluationDashboardPage() {
         </section>
       )}
 
-      {/* Wawasan & Simulasi Interoperabilitas SATUSEHAT Kemenkes RI (HL7 FHIR R4) */}
-      <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-100 pb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
-              <FileTextIcon width={18} height={18} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-neutral-900">
-                  Arsitektur & Simulasi Integrasi SATUSEHAT Kemenkes RI (Standar HL7 FHIR R4)
-                </h3>
-                <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-700">
-                  Permenkes No. 24/2022 & UU PDP No. 27/2022
-                </span>
-              </div>
-              <p className="text-xs text-neutral-500">
-                Pemetaan skema database relasional SIMRS Biometrik ke Resource standar HL7 FHIR R4 (Patient, Consent, Encounter, Condition ICD-10)
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={selectedSampleRm}
-              onChange={(e) => setSelectedSampleRm(e.target.value)}
-              aria-label="Pilih Pasien untuk Simulasi FHIR"
-              className="h-8 rounded-full border border-neutral-200 bg-neutral-50 px-3 text-xs font-medium text-neutral-800 outline-none focus:border-neutral-900"
-            >
-              {ENROLLED_PATIENT_PROFILES.map((p) => (
-                <option key={p.noRm} value={p.noRm}>
-                  {p.noRm} — {p.fullName} ({p.poliklinik})
-                </option>
-              ))}
-            </select>
-
-            {sampleProfile && (
-              <button
-                type="button"
-                onClick={() =>
-                  downloadSatusehatFhirJson({
-                    personId: sampleProfile.personId,
-                    noRm: sampleProfile.noRm,
-                    nim: sampleProfile.noRm,
-                    nik: sampleProfile.nik,
-                    fullName: sampleProfile.fullName,
-                    birthDate: sampleProfile.birthDate,
-                    gender: sampleProfile.gender,
-                    age: sampleProfile.age,
-                    bloodType: sampleProfile.bloodType,
-                    insurance: sampleProfile.insurance,
-                    allergies: sampleProfile.allergies,
-                    chronicConditions: sampleProfile.chronicConditions,
-                    poliklinik: sampleProfile.poliklinik,
-                    dokter: sampleProfile.dokter,
-                    medicalNotes: sampleProfile.medicalNotes,
-                    medicalHistory: sampleProfile.medicalHistory,
-                    similarity: 96.4,
-                    consentAccepted: true,
-                  })
-                }
-                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-neutral-900 px-3.5 text-xs font-medium text-white transition hover:bg-neutral-800"
-              >
-                <DownloadIcon width={13} height={13} />
-                Unduh Bundle FHIR (.json)
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-          <div className="space-y-3 text-xs">
-            <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-3.5">
-              <p className="font-semibold text-neutral-900">
-                Pemetaan Entitas Lokal (SQLite) → HL7 FHIR R4 SATUSEHAT
-              </p>
-              <ul className="mt-2 space-y-2 text-[11px] text-neutral-600">
-                <li className="flex items-start gap-2">
-                  <CheckIcon width={13} height={13} className="mt-0.5 shrink-0 text-emerald-600" />
-                  <span>
-                    <strong>Tabel <code>patients</code> → Resource <code>Patient</code>:</strong>{' '}
-                    Memetakan <code>nik</code> ke sistem identifier resmi <code>https://fhir.kemkes.go.id/id/nik</code> (IHS Number) serta <code>no_rm</code> ke identifier rekam medis internal RS.
-                  </span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckIcon width={13} height={13} className="mt-0.5 shrink-0 text-emerald-600" />
-                  <span>
-                    <strong>Persetujuan Biometrik → Resource <code>Consent</code>:</strong>{' '}
-                    Mencatat bukti <em>Opt-In</em> eksplisit pasien atas pemrosesan wajah & RME sesuai Pasal 20 UU PDP No. 27 Tahun 2022 (LOINC <code>59284-0</code>).
-                  </span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckIcon width={13} height={13} className="mt-0.5 shrink-0 text-emerald-600" />
-                  <span>
-                    <strong>Tabel <code>queue_slots</code> & <code>attendance_logs</code> → Resource <code>Encounter</code>:</strong>{' '}
-                    Mencatat kunjungan rawat jalan (<code>class: AMB</code>), waktu kedatangan terverifikasi wajah, lokasi poliklinik, dan dokter DPJP.
-                  </span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckIcon width={13} height={13} className="mt-0.5 shrink-0 text-emerald-600" />
-                  <span>
-                    <strong>Tabel <code>medical_records</code> → Resource <code>Condition</code>:</strong>{' '}
-                    Mengonversi diagnosis dokter menjadi struktur <code>code.coding</code> dengan sistem <code>http://hl7.org/fhir/sid/icd-10</code>.
-                  </span>
-                </li>
-              </ul>
-            </div>
-
-            <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-3.5 text-[11px] text-sky-950">
-              <p className="font-semibold text-sky-900">
-                Alur Pengiriman API Gateway SATUSEHAT (Bab Pembahasan Skripsi):
-              </p>
-              <p className="mt-1 leading-relaxed text-sky-800">
-                1. <strong>OAuth2 Client Credentials:</strong> Backend menukar <code>client_id</code> & <code>client_secret</code> Fasyankes ke endpoint <code>/oauth2/v1/accesstoken</code> untuk memperoleh Bearer Token.<br />
-                2. <strong>Validasi Biometrik & ICD-10:</strong> Setelah pasien terverifikasi wajah dan dokter menyimpan diagnosis ICD-10, sistem membentuk <code>Bundle (type: transaction)</code>.<br />
-                3. <strong>Transaksi Atomik FHIR:</strong> Payload dikirim melalui <code>POST https://api-satusehat.kemkes.go.id/fhir-r4/v1</code> secara asinkron.
-              </p>
-            </div>
-          </div>
-
-          <div className="rounded-xl bg-neutral-950 p-3.5 text-xs text-neutral-100">
-            <div className="flex items-center justify-between border-b border-white/10 pb-2">
-              <span className="font-mono text-[11px] font-semibold text-emerald-400">
-                Preview Payload: Bundle Transaction HL7 FHIR R4 ({sampleProfile?.noRm})
-              </span>
-              <span className="font-mono text-[10px] text-neutral-400">
-                application/fhir+json
-              </span>
-            </div>
-            <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-black/40 p-2.5 font-mono text-[10px] leading-relaxed text-emerald-300">
-              {sampleFhirBundle
-                ? JSON.stringify(sampleFhirBundle, null, 2)
-                : '// Pilih pasien untuk melihat struktur JSON FHIR R4'}
-            </pre>
-          </div>
-        </div>
-      </section>
-
-      {/* Tabel Riwayat Log Kunjungan & Tiket Antrean */}
+      {/* Tabel Riwayat Log Verifikasi & Penerbitan Tiket Antrean */}
       <section className="rounded-2xl border border-neutral-200/80 bg-white p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <UsersIcon width={16} height={16} className="text-neutral-500" />
             <div>
               <h3 className="text-sm font-semibold text-neutral-900">
-                Log Penerbitan Tiket Antrean & Verifikasi Pasien (
+                Log Eksekusi Verifikasi Biometrik &amp; Antrean (
                 {data?.totalAttendanceLogs ?? logs.length})
               </h3>
               <p className="text-xs text-neutral-500">
-                Rekam jejak seluruh verifikasi wajah biometrik maupun pencarian
-                manual NIK/No. RM
+                Rekam jejak pencocokan vektor biometrik maupun bypass manual No. RM
               </p>
             </div>
           </div>
@@ -836,12 +644,12 @@ function EvaluationDashboardPage() {
             <thead className="sticky top-0 bg-neutral-50 text-[11px] font-semibold text-neutral-500">
               <tr>
                 <th className="px-3.5 py-2.5">Waktu (WIB)</th>
-                <th className="px-3.5 py-2.5">Tiket Antrean</th>
+                <th className="px-3.5 py-2.5">Nomor Antrean</th>
                 <th className="px-3.5 py-2.5">No. RM</th>
-                <th className="px-3.5 py-2.5">Nama Pasien</th>
+                <th className="px-3.5 py-2.5">Nama Subjek</th>
                 <th className="px-3.5 py-2.5">Poliklinik</th>
                 <th className="px-3.5 py-2.5">Metode</th>
-                <th className="px-3.5 py-2.5 text-right">Kemiripan</th>
+                <th className="px-3.5 py-2.5 text-right">Cosine Sim.</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
@@ -851,7 +659,7 @@ function EvaluationDashboardPage() {
                     colSpan={7}
                     className="px-4 py-6 text-center text-xs text-neutral-400"
                   >
-                    Tidak ada log kunjungan yang cocok.
+                    Tidak ada log verifikasi yang cocok.
                   </td>
                 </tr>
               ) : (
@@ -896,7 +704,7 @@ function EvaluationDashboardPage() {
                           }`}
                         >
                           <CheckIcon width={10} height={10} />
-                          {isManual ? 'Manual NIK/RM' : 'Biometrik Wajah'}
+                          {isManual ? 'Manual Bypass' : 'Cosine Similarity'}
                         </span>
                       </td>
                       <td className="px-3.5 py-2.5 text-right font-mono font-medium text-neutral-800">

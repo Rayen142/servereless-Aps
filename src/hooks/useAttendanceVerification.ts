@@ -1,12 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-
-export interface MedicalHistoryItem {
-  readonly date: string;
-  readonly poliklinik: string;
-  readonly doctor: string;
-  readonly diagnosis: string;
-  readonly treatment: string;
-}
+import { resolveApiEndpoint } from '../lib/hospital';
 
 export interface QueueTicket {
   readonly ticketId: string;
@@ -20,19 +13,12 @@ export interface QueueTicket {
   readonly noRm: string;
   readonly fullName: string;
   readonly gender: string;
-  readonly insurance: string;
   readonly poliklinik: string;
   readonly dokter: string;
   readonly room: string;
-  readonly allergies: string;
-  readonly hasAllergyAlert: boolean;
   readonly status: string;
   readonly issuedAt: string;
   readonly isExistingTicket?: boolean;
-  readonly isPriority?: boolean;
-  readonly priorityLevel?: 'PRIORITAS' | 'REGULER';
-  readonly priorityReason?: string;
-  readonly fastTrackSavedPatients?: number;
 }
 
 export interface RecognizedPerson {
@@ -41,20 +27,15 @@ export interface RecognizedPerson {
   readonly nim: string;
   readonly nik: string;
   readonly fullName: string;
-  readonly birthDate?: string;
   readonly gender: string;
   readonly age: number;
-  readonly bloodType: string;
-  readonly insurance: string;
-  readonly allergies: string;
-  readonly chronicConditions: string;
   readonly poliklinik: string;
   readonly dokter: string;
-  readonly medicalNotes?: string;
-  readonly medicalHistory: readonly MedicalHistoryItem[];
   readonly similarity: number;
-  readonly consentAccepted?: boolean;
-  readonly consentTimestamp?: string;
+  readonly biometricLatencyMs?: number;
+  readonly totalLatencyMs?: number;
+  readonly coldStart?: boolean;
+  readonly verificationMethod?: string;
   readonly alreadyQueued?: boolean;
   readonly queueTicket?: QueueTicket;
 }
@@ -68,20 +49,12 @@ export interface VerificationFeedback {
 export interface EnrollFaceInput {
   readonly fullName: string;
   readonly gender: 'Laki-laki' | 'Perempuan';
-  readonly birthDate?: string;
   readonly noRm?: string;
   readonly nik?: string;
   readonly age?: number;
-  readonly bloodType?: string;
-  readonly insurance?: string;
-  readonly allergies?: string;
-  readonly chronicConditions?: string;
   readonly poliklinik?: string;
-  readonly medicalHistoryNotes?: string;
   readonly image: string;
   readonly extraImages?: readonly string[];
-  readonly consentAccepted?: boolean;
-  readonly consentTimestamp?: string;
 }
 
 export interface EnrollFaceResult {
@@ -99,11 +72,6 @@ export interface UseAttendanceVerificationResult {
   readonly identifyLive: (image: string) => Promise<void>;
   readonly clearLiveIdentity: () => void;
   readonly enrollFace: (input: EnrollFaceInput) => Promise<EnrollFaceResult>;
-  readonly appendMedicalHistory: (
-    item: MedicalHistoryItem,
-    fullHistory?: readonly MedicalHistoryItem[],
-  ) => void;
-  /** Membatalkan permintaan yang berjalan dan menghapus umpan balik. */
   readonly reset: () => void;
 }
 
@@ -114,31 +82,14 @@ interface VerifyResponse {
 }
 
 const MESSAGES = {
-  notConfigured: 'Endpoint verifikasi belum dikonfigurasi.',
-  recorded: 'Pasien lama terverifikasi & tiket antrean otomatis diterbitkan.',
-  notRecognized: 'Wajah pasien belum terdaftar di database Rekam Medis RS.',
-  notFound: 'Data pasien dengan NIK / No. RM tersebut tidak ditemukan.',
-  unreachable: 'Tidak dapat terhubung ke layanan biometrik RS.',
-  enrollFailed: 'Gagal mendaftarkan pasien baru.',
+  notConfigured: 'Endpoint VITE_API_URL belum dikonfigurasi pada .env.local.',
+  recorded: 'Identifikasi Berhasil. Jarak Cosine Similarity memenuhi threshold.',
+  notRecognized:
+    'Identifikasi Gagal. Jarak Cosine Similarity berada di bawah threshold.',
+  notFound: 'Nomor Rekam Medis tidak ditemukan pada basis data.',
+  unreachable: 'Tidak dapat terhubung ke endpoint backend biometrik.',
+  enrollFailed: 'Gagal mendaftarkan vektor biometrik pasien baru.',
 } as const;
-
-const parseMedicalHistory = (raw: unknown): readonly MedicalHistoryItem[] => {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  return raw
-    .filter(
-      (item): item is Record<string, unknown> =>
-        typeof item === 'object' && item !== null,
-    )
-    .map((item) => ({
-      date: typeof item.date === 'string' ? item.date : '-',
-      poliklinik: typeof item.poliklinik === 'string' ? item.poliklinik : '-',
-      doctor: typeof item.doctor === 'string' ? item.doctor : '-',
-      diagnosis: typeof item.diagnosis === 'string' ? item.diagnosis : '-',
-      treatment: typeof item.treatment === 'string' ? item.treatment : '-',
-    }));
-};
 
 const parseQueueTicket = (raw: unknown): QueueTicket | undefined => {
   if (typeof raw !== 'object' || raw === null) {
@@ -191,27 +142,12 @@ const parseQueueTicket = (raw: unknown): QueueTicket | undefined => {
     noRm: typeof t.noRm === 'string' ? t.noRm : '-',
     fullName: typeof t.fullName === 'string' ? t.fullName : '-',
     gender: typeof t.gender === 'string' ? t.gender : '-',
-    insurance:
-      typeof t.insurance === 'string' ? t.insurance : 'BPJS Kesehatan',
     poliklinik: typeof t.poliklinik === 'string' ? t.poliklinik : 'Poli Umum',
     dokter: typeof t.dokter === 'string' ? t.dokter : '-',
     room: typeof t.room === 'string' ? t.room : 'Lantai 1',
-    allergies:
-      typeof t.allergies === 'string' ? t.allergies : 'Tidak Ada Alergi',
-    hasAllergyAlert: t.hasAllergyAlert === true,
-    status:
-      typeof t.status === 'string' ? t.status : 'MENUNGGU PANGGILAN POLI',
+    status: typeof t.status === 'string' ? t.status : 'MENUNGGU',
     issuedAt: typeof t.issuedAt === 'string' ? t.issuedAt : '',
     isExistingTicket: t.isExistingTicket === true,
-    isPriority: t.isPriority === true,
-    priorityLevel:
-      t.priorityLevel === 'PRIORITAS' ? 'PRIORITAS' : 'REGULER',
-    priorityReason:
-      typeof t.priorityReason === 'string' ? t.priorityReason : undefined,
-    fastTrackSavedPatients:
-      typeof t.fastTrackSavedPatients === 'number'
-        ? t.fastTrackSavedPatients
-        : undefined,
   };
 };
 
@@ -238,49 +174,10 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
   const gender = typeof record.gender === 'string' ? record.gender : '-';
   const nik = typeof record.nik === 'string' ? record.nik : '-';
   const age = typeof record.age === 'number' ? record.age : 30;
-  const birthDate =
-    typeof record.birthDate === 'string'
-      ? record.birthDate
-      : typeof record.birth_date === 'string'
-        ? record.birth_date
-        : typeof record.tanggalLahir === 'string'
-          ? record.tanggalLahir
-          : undefined;
-  const medicalNotes =
-    typeof record.medicalNotes === 'string'
-      ? record.medicalNotes
-      : typeof record.medical_notes === 'string'
-        ? record.medical_notes
-        : undefined;
-  const bloodType =
-    typeof record.bloodType === 'string' ? record.bloodType : 'O+';
-  const insurance =
-    typeof record.insurance === 'string' ? record.insurance : 'BPJS Kesehatan';
-  const allergies =
-    typeof record.allergies === 'string'
-      ? record.allergies
-      : 'Tidak Ada Alergi';
-  const chronicConditions =
-    typeof record.chronicConditions === 'string'
-      ? record.chronicConditions
-      : 'Tidak Ada';
   const poliklinik =
     typeof record.poliklinik === 'string' ? record.poliklinik : 'Poli Umum';
   const dokter = typeof record.dokter === 'string' ? record.dokter : '-';
-  const medicalHistory = parseMedicalHistory(record.medicalHistory);
   const queueTicket = parseQueueTicket(record.queueTicket);
-  const consentAccepted =
-    record.consentAccepted !== undefined
-      ? Boolean(record.consentAccepted)
-      : record.consent_accepted !== undefined
-        ? Boolean(record.consent_accepted)
-        : true;
-  const consentTimestamp =
-    typeof record.consentTimestamp === 'string'
-      ? record.consentTimestamp
-      : typeof record.consent_timestamp === 'string'
-        ? record.consent_timestamp
-        : undefined;
   const alreadyQueued =
     record.alreadyQueued === true || queueTicket?.isExistingTicket === true;
   const similarity =
@@ -289,6 +186,20 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
       : typeof record.confidence === 'number'
         ? record.confidence
         : 0;
+  const biometricLatencyMs =
+    typeof record.biometricLatencyMs === 'number'
+      ? record.biometricLatencyMs
+      : undefined;
+  const totalLatencyMs =
+    typeof record.totalLatencyMs === 'number'
+      ? record.totalLatencyMs
+      : undefined;
+  const coldStart =
+    typeof record.coldStart === 'boolean' ? record.coldStart : undefined;
+  const verificationMethod =
+    typeof record.verificationMethod === 'string'
+      ? record.verificationMethod
+      : undefined;
 
   return {
     success,
@@ -301,20 +212,15 @@ const parseVerifyResponse = (body: unknown): VerifyResponse => {
             nim: noRm,
             nik,
             fullName,
-            birthDate,
             gender,
             age,
-            bloodType,
-            insurance,
-            allergies,
-            chronicConditions,
             poliklinik,
             dokter,
-            medicalNotes,
-            medicalHistory,
             similarity,
-            consentAccepted,
-            consentTimestamp,
+            biometricLatencyMs,
+            totalLatencyMs,
+            coldStart,
+            verificationMethod,
             alreadyQueued,
             queueTicket,
           }
@@ -342,8 +248,8 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
         return;
       }
 
-      const apiUrl = import.meta.env.VITE_API_URL;
-      if (!apiUrl) {
+      const verifyUrl = resolveApiEndpoint('verify');
+      if (!verifyUrl) {
         setFeedback({ type: 'error', message: MESSAGES.notConfigured });
         return;
       }
@@ -356,7 +262,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
       setFeedback(null);
 
       try {
-        const response = await fetch(apiUrl, {
+        const response = await fetch(verifyUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image, poliklinik }),
@@ -401,13 +307,12 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
 
   const lookupManual = useCallback(
     async (query: string, poliklinik?: string): Promise<boolean> => {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      if (!apiUrl) {
+      const lookupUrl = resolveApiEndpoint('lookup');
+      if (!lookupUrl) {
         setFeedback({ type: 'error', message: MESSAGES.notConfigured });
         return false;
       }
 
-      const lookupUrl = apiUrl.replace(/\/verify\/?$/, '/lookup');
       setIsSubmitting(true);
       setFeedback(null);
 
@@ -418,6 +323,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
           body: JSON.stringify({
             action: 'lookup_manual',
             query: query.trim(),
+            noRm: query.trim(),
             poliklinik,
           }),
         });
@@ -454,14 +360,14 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
       return;
     }
 
-    const apiUrl = import.meta.env.VITE_API_URL;
-    if (!apiUrl) {
+    const verifyUrl = resolveApiEndpoint('verify');
+    if (!verifyUrl) {
       return;
     }
 
     liveInFlightRef.current = true;
     try {
-      const response = await fetch(apiUrl, {
+      const response = await fetch(verifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image, identifyOnly: true }),
@@ -487,12 +393,11 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
 
   const enrollFace = useCallback(
     async (input: EnrollFaceInput): Promise<EnrollFaceResult> => {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      if (!apiUrl) {
+      const enrollUrl = resolveApiEndpoint('enroll');
+      if (!enrollUrl) {
         return { success: false, message: MESSAGES.notConfigured };
       }
 
-      const enrollUrl = apiUrl.replace(/\/verify\/?$/, '/enroll');
       try {
         const response = await fetch(enrollUrl, {
           method: 'POST',
@@ -501,20 +406,12 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
             action: 'enroll',
             fullName: input.fullName,
             gender: input.gender,
-            birthDate: input.birthDate,
             noRm: input.noRm,
             nik: input.nik,
             age: input.age,
-            bloodType: input.bloodType,
-            insurance: input.insurance,
-            allergies: input.allergies,
-            chronicConditions: input.chronicConditions,
             poliklinik: input.poliklinik,
-            medicalHistoryNotes: input.medicalHistoryNotes,
             image: input.image,
             extraImages: input.extraImages,
-            consentAccepted: input.consentAccepted ?? true,
-            consentTimestamp: input.consentTimestamp ?? new Date().toISOString(),
           }),
         });
         const body: unknown = await response.json().catch(() => null);
@@ -528,7 +425,7 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
             success: true,
             message:
               payload.message ??
-              `Pasien ${input.fullName} berhasil didaftarkan.`,
+              `Registrasi vektor biometrik ${input.fullName} berhasil.`,
             person: payload.person,
           };
         }
@@ -540,38 +437,6 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
       } catch {
         return { success: false, message: MESSAGES.unreachable };
       }
-    },
-    [],
-  );
-
-  const appendMedicalHistory = useCallback(
-    (
-      item: MedicalHistoryItem,
-      fullHistory?: readonly MedicalHistoryItem[],
-    ) => {
-      setLiveIdentity((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          medicalHistory:
-            fullHistory && fullHistory.length > 0
-              ? fullHistory
-              : [item, ...prev.medicalHistory],
-        };
-      });
-      setFeedback((prev) => {
-        if (!prev?.person) return prev;
-        return {
-          ...prev,
-          person: {
-            ...prev.person,
-            medicalHistory:
-              fullHistory && fullHistory.length > 0
-                ? fullHistory
-                : [item, ...prev.person.medicalHistory],
-          },
-        };
-      });
     },
     [],
   );
@@ -593,7 +458,6 @@ export function useAttendanceVerification(): UseAttendanceVerificationResult {
     identifyLive,
     clearLiveIdentity,
     enrollFace,
-    appendMedicalHistory,
     reset,
   };
 }

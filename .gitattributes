@@ -1,0 +1,9 @@
+# Treat database and media files as binary to prevent CRLF line ending corruption on Windows
+*.db binary
+*.db-wal binary
+*.db-shm binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.wasm binary
+*.ico binary

@@ -6,18 +6,14 @@ import { AlertIcon, RefreshIcon, ShieldCheckIcon } from './icons';
 interface CameraViewProps {
   readonly camera: UseWebCameraResult;
   readonly detection: FaceDetectionResult;
-  /** Foto hasil tangkapan; jika ada, ditampilkan menggantikan video. */
   readonly capturedImage?: string | null;
   readonly isFlashing?: boolean;
-  /** Label kecil yang menempel di atas kotak wajah. */
   readonly faceLabel?: string | null;
   readonly faceSubLabel?: string | null;
-  readonly faceAlert?: boolean;
-  /** Overlay tambahan (mis. status di atas foto). */
   readonly children?: ReactNode;
 }
 
-/** Tampilan kamera minimalis dengan indikator Liveness Detection (Anti-Spoofing). */
+/** Tampilan kamera dengan indikator deteksi wajah & Liveness Biometrik. */
 function CameraView({
   camera,
   detection,
@@ -25,7 +21,6 @@ function CameraView({
   isFlashing = false,
   faceLabel,
   faceSubLabel,
-  faceAlert = false,
   children,
 }: CameraViewProps) {
   const isReady = camera.status === 'ready';
@@ -38,7 +33,7 @@ function CameraView({
       {capturedImage ? (
         <img
           src={capturedImage}
-          alt="Hasil tangkapan wajah pasien"
+          alt="Citra input vektor biometrik wajah"
           className="h-full w-full -scale-x-100 object-cover"
         />
       ) : (
@@ -47,7 +42,7 @@ function CameraView({
           autoPlay
           muted
           playsInline
-          aria-label="Kamera langsung pemindai wajah"
+          aria-label="Stream sensor kamera biometrik"
           className={`h-full w-full -scale-x-100 object-cover transition-opacity duration-300 ${
             isReady ? 'opacity-100' : 'opacity-0'
           }`}
@@ -68,14 +63,14 @@ function CameraView({
           />
           <span>
             {capturedImage
-              ? 'Foto Tersimpan'
+              ? 'Citra Wajah Diakuisisi'
               : isReady
-                ? 'Kamera Aktif'
-                : 'Menyiapkan…'}
+                ? 'Sensor Kamera Aktif'
+                : 'Inisialisasi Sensor…'}
           </span>
         </div>
 
-        {/* Liveness Anti-Spoofing Indicator */}
+        {/* Liveness Biometric Indicator */}
         {!capturedImage && isReady && box && (
           <div
             className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium backdrop-blur-md transition ${
@@ -89,16 +84,16 @@ function CameraView({
             <ShieldCheckIcon width={13} height={13} />
             <span>
               {liveness === 'verified'
-                ? `Liveness Live · ${detection.livenessScore.toFixed(0)}%`
+                ? `Liveness Terverifikasi · ${detection.livenessScore.toFixed(0)}%`
                 : liveness === 'spoof_warning'
                   ? 'Anti-Spoofing: Gerakkan Wajah'
-                  : 'Cek Liveness Biometrik…'}
+                  : 'Validasi Geometri Wajah…'}
             </span>
           </div>
         )}
       </div>
 
-      {/* Kotak tracking wajah minimalis */}
+      {/* Bounding box deteksi wajah */}
       {!capturedImage && isReady && box && (
         <div className="pointer-events-none absolute inset-0">
           <div
@@ -116,17 +111,10 @@ function CameraView({
               height: `${box.heightPct}%`,
             }}
           >
-            {/* Floating identity tag */}
             {faceLabel && (
               <div className="absolute -top-2.5 left-1/2 flex -translate-x-1/2 -translate-y-full flex-col items-center">
                 <div className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-white/95 px-3 py-1 text-xs font-medium text-neutral-900 shadow-sm backdrop-blur-md">
                   <span>{faceLabel}</span>
-                  {faceAlert && (
-                    <span className="inline-flex items-center gap-0.5 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
-                      <AlertIcon width={10} height={10} />
-                      Alergi
-                    </span>
-                  )}
                 </div>
                 {faceSubLabel && (
                   <span className="mt-1 rounded-full bg-black/65 px-2.5 py-0.5 font-mono text-[10px] text-neutral-200 backdrop-blur-sm">
@@ -175,7 +163,7 @@ function CameraView({
           ) : (
             <div className="space-y-2.5">
               <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-neutral-700 border-t-white" />
-              <p className="text-xs text-neutral-400">Menyiapkan kamera…</p>
+              <p className="text-xs text-neutral-400">Mengekstraksi Vektor Biometrik…</p>
             </div>
           )}
         </div>

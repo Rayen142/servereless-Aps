@@ -1,8 +1,8 @@
 """
-Modul Database Relasional SQLite untuk SIMRS Biometrik (Mode Lokal / Hybrid).
-Menyimpan data pasien, persetujuan UU PDP (Informed Consent), riwayat rekam medis
-berstandar ICD-10, log kehadiran/verifikasi wajah, serta status antrean poliklinik
-secara persisten di `dataset/simrs_biometric.db`.
+Modul Database Relasional SQLite untuk SIMRS Biometric Queue Testbed.
+Menyimpan profil identitas biometrik pasien, status antrean poliklinik,
+dan log pengujian verifikasi wajah secara persisten di `dataset/simrs_biometric.db`.
+Seluruh skema rekam medis klinis, gejala, alergi, dan resep obat telah dihapus.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ DEFAULT_POLI_SEED: list[tuple[str, str, int, int]] = [
     ("PR", "Poli Paru & Pernapasan", 2, 4),
     ("SR", "Poli Saraf (Neurologi)", 1, 2),
     ("MT", "Poli Mata", 3, 5),
-    ("GM", "Poli Gigi & Mulut", 2, 4),
+    ("GG", "Poli Gigi & Mulut", 2, 4),
     ("TH", "Poli THT", 1, 3),
     ("KK", "Poli Kulit & Kelamin", 2, 4),
     ("OR", "Poli Ortopedi", 1, 2),
@@ -52,105 +52,149 @@ def _now_iso() -> str:
 
 def get_connection() -> sqlite3.Connection:
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(SQLITE_DB_PATH), timeout=15.0, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA synchronous = NORMAL;")
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(SQLITE_DB_PATH), timeout=15.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA foreign_keys = ON;")
+        return conn
+    except sqlite3.DatabaseError as err:
+        logger.warning("File SQLite rusak (%s), membangun ulang skema bersih...", err)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(f"{SQLITE_DB_PATH}{suffix}")
+            if p.exists():
+                p.unlink(missing_ok=True)
+        conn = sqlite3.connect(str(SQLITE_DB_PATH), timeout=15.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA foreign_keys = ON;")
+        return conn
 
 
-def _ensure_patients_schema_updated(conn: sqlite3.Connection) -> None:
+def _migrate_clean_testbed_schema(conn: sqlite3.Connection) -> None:
     """
-    Memastikan tabel `patients` mendukung multi-pose (tanpa UNIQUE constraint pada no_rm)
-    serta memiliki kolom canonical_person_id, birth_date, medical_notes, consent_accepted,
-    dan consent_timestamp.
+    Menghapus tabel `medical_records` serta kolom-kolom medis (allergies,
+    chronic_conditions, medical_notes, blood_type, consent_*) dari database
+    lama apabila masih ada.
     """
-    table_sql_row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='patients'"
-    ).fetchone()
-    if not table_sql_row or not table_sql_row["sql"]:
-        return
+    conn.execute("DROP TABLE IF EXISTS medical_records;")
 
-    create_sql = str(table_sql_row["sql"])
-    if "no_rm TEXT UNIQUE" in create_sql:
-        logger.info(
-            "Memperbarui skema tabel `patients` agar mendukung multi-pose per No. RM..."
-        )
+    patient_cols = {
+        str(r["name"])
+        for r in conn.execute("PRAGMA table_info(patients)").fetchall()
+    }
+    legacy_medical_cols = {
+        "allergies",
+        "chronic_conditions",
+        "medical_notes",
+        "blood_type",
+        "consent_accepted",
+        "consent_timestamp",
+    }
+    if patient_cols and (patient_cols & legacy_medical_cols):
+        logger.info("Membersihkan kolom medis lama dari tabel `patients`...")
         conn.executescript(
             """
             PRAGMA foreign_keys = OFF;
-            CREATE TABLE IF NOT EXISTS patients_new (
+            CREATE TABLE IF NOT EXISTS patients_clean (
                 person_id TEXT PRIMARY KEY,
-                canonical_person_id TEXT NOT NULL,
+                canonical_person_id TEXT NOT NULL DEFAULT '',
                 no_rm TEXT NOT NULL,
                 nim TEXT,
                 nik TEXT,
                 full_name TEXT NOT NULL,
-                birth_date TEXT NOT NULL DEFAULT '1995-01-01',
                 gender TEXT NOT NULL DEFAULT 'L',
                 gender_label TEXT NOT NULL DEFAULT 'Laki-laki',
                 age INTEGER NOT NULL DEFAULT 30,
-                blood_type TEXT NOT NULL DEFAULT 'O+',
-                insurance TEXT NOT NULL DEFAULT 'BPJS Kesehatan',
-                allergies TEXT NOT NULL DEFAULT 'Tidak Ada Alergi',
-                chronic_conditions TEXT NOT NULL DEFAULT 'Tidak Ada',
                 poliklinik TEXT NOT NULL DEFAULT 'Poli Umum',
                 dokter TEXT NOT NULL DEFAULT 'dr. Sinta Maharani',
-                medical_notes TEXT NOT NULL DEFAULT '',
                 enrolled_image TEXT,
                 positive_test_image TEXT,
                 enrolled_poses_count INTEGER NOT NULL DEFAULT 1,
-                consent_accepted INTEGER NOT NULL DEFAULT 1,
-                consent_timestamp TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
-            INSERT OR IGNORE INTO patients_new (
+            INSERT OR IGNORE INTO patients_clean (
                 person_id, canonical_person_id, no_rm, nim, nik, full_name,
-                gender, gender_label, age, blood_type, insurance, allergies,
-                chronic_conditions, poliklinik, dokter, enrolled_image,
+                gender, gender_label, age, poliklinik, dokter, enrolled_image,
                 positive_test_image, enrolled_poses_count, created_at, updated_at
             )
             SELECT
-                person_id, person_id, no_rm, nim, nik, full_name,
-                gender, gender_label, age, blood_type, insurance, allergies,
-                chronic_conditions, poliklinik, dokter, enrolled_image,
-                positive_test_image, enrolled_poses_count, created_at, updated_at
+                person_id,
+                COALESCE(NULLIF(canonical_person_id, ''), person_id),
+                no_rm,
+                COALESCE(nim, no_rm),
+                COALESCE(nik, '3273010000000000'),
+                full_name,
+                gender,
+                gender_label,
+                age,
+                poliklinik,
+                dokter,
+                enrolled_image,
+                positive_test_image,
+                COALESCE(enrolled_poses_count, 1),
+                created_at,
+                updated_at
             FROM patients;
             DROP TABLE patients;
-            ALTER TABLE patients_new RENAME TO patients;
+            ALTER TABLE patients_clean RENAME TO patients;
             PRAGMA foreign_keys = ON;
             """
         )
-        return
 
-    existing_cols = {
+    log_cols = {
         str(r["name"])
-        for r in conn.execute("PRAGMA table_info(patients)").fetchall()
+        for r in conn.execute("PRAGMA table_info(attendance_logs)").fetchall()
     }
-    required_migrations = [
-        ("canonical_person_id", "TEXT NOT NULL DEFAULT ''"),
-        ("birth_date", "TEXT NOT NULL DEFAULT '1995-01-01'"),
-        ("medical_notes", "TEXT NOT NULL DEFAULT ''"),
-        ("consent_accepted", "INTEGER NOT NULL DEFAULT 1"),
-        ("consent_timestamp", "TEXT"),
-    ]
-    for col_name, col_def in required_migrations:
-        if col_name not in existing_cols:
-            logger.info("Menambahkan kolom `%s` pada tabel `patients`.", col_name)
-            conn.execute(f"ALTER TABLE patients ADD COLUMN {col_name} {col_def}")
+    if "allergies" in log_cols:
+        logger.info("Membersihkan kolom `allergies` dari tabel `attendance_logs`...")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_logs_clean (
+                attendance_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                person_id TEXT NOT NULL,
+                no_rm TEXT NOT NULL,
+                full_name TEXT NOT NULL,
+                gender TEXT,
+                poliklinik TEXT NOT NULL,
+                queue_number TEXT NOT NULL,
+                status TEXT NOT NULL,
+                verification_method TEXT NOT NULL DEFAULT 'BIOMETRIC_FACE',
+                similarity REAL NOT NULL DEFAULT 0.0
+            );
+            INSERT OR IGNORE INTO attendance_logs_clean (
+                attendance_id, timestamp, person_id, no_rm, full_name,
+                gender, poliklinik, queue_number, status, verification_method, similarity
+            )
+            SELECT
+                attendance_id, timestamp, person_id, no_rm, full_name,
+                gender, poliklinik, queue_number, status, verification_method, similarity
+            FROM attendance_logs;
+            DROP TABLE attendance_logs;
+            ALTER TABLE attendance_logs_clean RENAME TO attendance_logs;
+            """
+        )
 
 
 def init_sqlite_db() -> None:
-    """Inisialisasi skema tabel relasional SQLite dan migrasi data awal dari JSON jika kosong."""
+    """Inisialisasi skema tabel SQLite untuk Biometric Queue Testbed."""
     global _INITIALIZED
     with _DB_LOCK:
         if _INITIALIZED and SQLITE_DB_PATH.exists():
             return
 
         with get_connection() as conn:
-            _ensure_patients_schema_updated(conn)
+            _migrate_clean_testbed_schema(conn)
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS patients (
@@ -160,22 +204,14 @@ def init_sqlite_db() -> None:
                     nim TEXT,
                     nik TEXT,
                     full_name TEXT NOT NULL,
-                    birth_date TEXT NOT NULL DEFAULT '1995-01-01',
                     gender TEXT NOT NULL DEFAULT 'L',
                     gender_label TEXT NOT NULL DEFAULT 'Laki-laki',
                     age INTEGER NOT NULL DEFAULT 30,
-                    blood_type TEXT NOT NULL DEFAULT 'O+',
-                    insurance TEXT NOT NULL DEFAULT 'BPJS Kesehatan',
-                    allergies TEXT NOT NULL DEFAULT 'Tidak Ada Alergi',
-                    chronic_conditions TEXT NOT NULL DEFAULT 'Tidak Ada',
                     poliklinik TEXT NOT NULL DEFAULT 'Poli Umum',
                     dokter TEXT NOT NULL DEFAULT 'dr. Sinta Maharani',
-                    medical_notes TEXT NOT NULL DEFAULT '',
                     enrolled_image TEXT,
                     positive_test_image TEXT,
                     enrolled_poses_count INTEGER NOT NULL DEFAULT 1,
-                    consent_accepted INTEGER NOT NULL DEFAULT 1,
-                    consent_timestamp TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -184,22 +220,6 @@ def init_sqlite_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_patients_nik ON patients(nik);
                 CREATE INDEX IF NOT EXISTS idx_patients_full_name ON patients(full_name);
 
-                CREATE TABLE IF NOT EXISTS medical_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    person_id TEXT NOT NULL,
-                    no_rm TEXT NOT NULL,
-                    visit_date TEXT NOT NULL,
-                    poliklinik TEXT NOT NULL,
-                    doctor TEXT NOT NULL,
-                    diagnosis TEXT NOT NULL,
-                    treatment TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (person_id) REFERENCES patients(person_id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_medical_records_person_id ON medical_records(person_id);
-                CREATE INDEX IF NOT EXISTS idx_medical_records_no_rm ON medical_records(no_rm);
-
                 CREATE TABLE IF NOT EXISTS attendance_logs (
                     attendance_id TEXT PRIMARY KEY,
                     timestamp TEXT NOT NULL,
@@ -207,7 +227,6 @@ def init_sqlite_db() -> None:
                     no_rm TEXT NOT NULL,
                     full_name TEXT NOT NULL,
                     gender TEXT,
-                    allergies TEXT,
                     poliklinik TEXT NOT NULL,
                     queue_number TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -248,13 +267,9 @@ def init_sqlite_db() -> None:
 
 
 def _seed_from_json_files_if_needed() -> None:
-    """
-    Melakukan migrasi/seeding otomatis dari metadata.json, local_attendance_log.json,
-    dan default poliklinik ke SQLite agar seluruh 26 subjek dan 10 poli selalu sinkron.
-    """
+    """Seeding subjek uji biometrik dari metadata.json dan antrean awal poliklinik."""
     now = _now_iso()
     with _DB_LOCK, get_connection() as conn:
-        # 1. Seed / Sinkronkan seluruh subjek dari metadata.json (termasuk multi-pose)
         if METADATA_JSON_PATH.exists():
             try:
                 raw_meta = json.loads(METADATA_JSON_PATH.read_text(encoding="utf-8"))
@@ -265,19 +280,9 @@ def _seed_from_json_files_if_needed() -> None:
                         continue
                     canonical_pid = str(s.get("canonical_person_id") or pid).strip()
                     no_rm = str(s.get("no_rm") or s.get("nim") or pid).strip()
-                    birth_date = str(
-                        s.get("birth_date") or s.get("birthDate") or "1995-01-01"
-                    ).strip()
-                    med_notes = str(
-                        s.get("medical_notes") or s.get("medicalNotes") or ""
-                    ).strip()
                     gender_raw = str(s.get("gender") or "L").strip()
                     gender_code = "L" if gender_raw in ("L", "Laki-laki") else "P"
-                    gender_label = (
-                        "Laki-laki" if gender_code == "L" else "Perempuan"
-                    )
-                    consent_ok = 1 if s.get("consent_accepted", True) else 0
-                    consent_ts = str(s.get("consent_timestamp") or now)
+                    gender_label = "Laki-laki" if gender_code == "L" else "Perempuan"
 
                     exists = conn.execute(
                         "SELECT 1 FROM patients WHERE person_id = ?",
@@ -289,11 +294,10 @@ def _seed_from_json_files_if_needed() -> None:
                             """
                             INSERT INTO patients (
                                 person_id, canonical_person_id, no_rm, nim, nik, full_name,
-                                birth_date, gender, gender_label, age, blood_type, insurance,
-                                allergies, chronic_conditions, poliklinik, dokter, medical_notes,
+                                gender, gender_label, age, poliklinik, dokter,
                                 enrolled_image, positive_test_image, enrolled_poses_count,
-                                consent_accepted, consent_timestamp, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 pid,
@@ -302,17 +306,11 @@ def _seed_from_json_files_if_needed() -> None:
                                 no_rm,
                                 str(s.get("nik") or "3273010000000000"),
                                 str(s.get("full_name") or pid),
-                                birth_date,
                                 gender_code,
                                 gender_label,
                                 int(s.get("age") or 30),
-                                str(s.get("blood_type") or "O+"),
-                                str(s.get("insurance") or "BPJS Kesehatan"),
-                                str(s.get("allergies") or "Tidak Ada Alergi"),
-                                str(s.get("chronic_conditions") or "Tidak Ada"),
                                 str(s.get("poliklinik") or "Poli Umum"),
                                 str(s.get("dokter") or "dr. Sinta Maharani"),
-                                med_notes,
                                 str(
                                     s.get("enrolled_image")
                                     or f"images/enrolled/{pid}.jpg"
@@ -322,53 +320,58 @@ def _seed_from_json_files_if_needed() -> None:
                                     or f"images/enrolled/{pid}.jpg"
                                 ),
                                 int(s.get("enrolled_poses_count") or 1),
-                                consent_ok,
-                                consent_ts,
                                 now,
                                 now,
                             ),
                         )
-
-                        # Seed medical history untuk pasien utama
-                        history = s.get("medical_history") or []
-                        for h in reversed(history):
-                            if isinstance(h, dict):
-                                conn.execute(
-                                    """
-                                    INSERT INTO medical_records (
-                                        person_id, no_rm, visit_date, poliklinik,
-                                        doctor, diagnosis, treatment, created_at
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        pid,
-                                        no_rm,
-                                        str(h.get("date") or "2026-10-24"),
-                                        str(h.get("poliklinik") or "Poli Umum"),
-                                        str(h.get("doctor") or "dr. Sinta Maharani"),
-                                        str(h.get("diagnosis") or "-"),
-                                        str(h.get("treatment") or "-"),
-                                        now,
-                                    ),
-                                )
                     else:
-                        # Sinkronkan no_rm 4-digit, birth_date, dan medical_notes terbaru
                         conn.execute(
                             """
                             UPDATE patients
                             SET canonical_person_id = ?,
                                 no_rm = ?,
-                                nim = ?,
-                                birth_date = ?,
-                                medical_notes = ?
+                                nim = ?
                             WHERE person_id = ?
                             """,
-                            (canonical_pid, no_rm, no_rm, birth_date, med_notes, pid),
+                            (canonical_pid, no_rm, no_rm, pid),
                         )
             except Exception as err:
                 logger.error("Gagal melakukan seeding awal dari metadata.json: %s", err)
 
-        # 2. Seed attendance_logs dari local_attendance_log.json jika tabel masih kosong
+        # Pastikan subjek fallback RM-2026-501B selalu terdaftar
+        fallback_exists = conn.execute(
+            "SELECT 1 FROM patients WHERE upper(no_rm) = 'RM-2026-501B' OR upper(person_id) = 'RM-2026-501B'"
+        ).fetchone()
+        if not fallback_exists:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO patients (
+                    person_id, canonical_person_id, no_rm, nim, nik, full_name,
+                    gender, gender_label, age, poliklinik, dokter,
+                    enrolled_image, positive_test_image, enrolled_poses_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "RM-2026-501B",
+                    "RM-2026-501B",
+                    "RM-2026-501B",
+                    "RM-2026-501B",
+                    "3273012304070001",
+                    "Candra Hidayattuloh",
+                    "L",
+                    "Laki-laki",
+                    19,
+                    "Poli Umum",
+                    "dr. Sinta Maharani",
+                    "images/enrolled/RM-2026-501B.jpg",
+                    "images/enrolled/RM-2026-501B.jpg",
+                    1,
+                    now,
+                    now,
+                ),
+            )
+
         log_count = conn.execute("SELECT COUNT(*) FROM attendance_logs").fetchone()[0]
         if log_count == 0 and ATTENDANCE_LOG_PATH.exists():
             try:
@@ -383,9 +386,9 @@ def _seed_from_json_files_if_needed() -> None:
                         """
                         INSERT OR IGNORE INTO attendance_logs (
                             attendance_id, timestamp, person_id, no_rm, full_name,
-                            gender, allergies, poliklinik, queue_number, status,
+                            gender, poliklinik, queue_number, status,
                             verification_method, similarity
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             att_id,
@@ -394,7 +397,6 @@ def _seed_from_json_files_if_needed() -> None:
                             str(item.get("NoRM") or item.get("ID") or "-"),
                             str(item.get("FullName") or "-"),
                             str(item.get("Gender") or "-"),
-                            str(item.get("Allergies") or "Tidak Ada Alergi"),
                             str(item.get("Poliklinik") or "Poli Umum"),
                             str(item.get("QueueNumber") or "-"),
                             str(item.get("Status") or "QUEUE_ISSUED"),
@@ -405,7 +407,6 @@ def _seed_from_json_files_if_needed() -> None:
             except Exception as err:
                 logger.error("Gagal melakukan seeding awal attendance_logs: %s", err)
 
-        # 3. Seed poli_queues jika masih kosong agar seluruh 10 poliklinik langsung terdaftar
         q_count = conn.execute("SELECT COUNT(*) FROM poli_queues").fetchone()[0]
         if q_count == 0:
             for prefix, poli_name, serving_seq, issued_seq in DEFAULT_POLI_SEED:
@@ -421,95 +422,51 @@ def _seed_from_json_files_if_needed() -> None:
         conn.commit()
 
 
-def _row_to_patient_dict(
-    row: sqlite3.Row, medical_history: list[dict[str, str]]
-) -> dict[str, Any]:
+def _row_to_patient_dict(row: sqlite3.Row) -> dict[str, Any]:
     keys = row.keys()
-    birth_date = row["birth_date"] if "birth_date" in keys else "1995-01-01"
-    med_notes = row["medical_notes"] if "medical_notes" in keys else ""
     canonical_pid = (
         row["canonical_person_id"]
         if "canonical_person_id" in keys and row["canonical_person_id"]
         else row["person_id"]
     )
-    consent_ok = (
-        bool(row["consent_accepted"]) if "consent_accepted" in keys else True
-    )
-    consent_ts = (
-        row["consent_timestamp"] if "consent_timestamp" in keys else None
-    )
     return {
         "person_id": row["person_id"],
         "canonical_person_id": canonical_pid,
         "no_rm": row["no_rm"],
-        # Skema pasien seragam (rmNumber, fullName, birthDate, defaultPoli, medicalNotes)
         "rm_number": row["no_rm"],
         "rmNumber": row["no_rm"],
         "nim": row["nim"] or row["no_rm"],
         "nik": row["nik"] or "-",
         "full_name": row["full_name"],
         "fullName": row["full_name"],
-        "birth_date": birth_date or "1995-01-01",
-        "birthDate": birth_date or "1995-01-01",
         "gender": row["gender"],
         "gender_label": row["gender_label"],
         "age": int(row["age"]),
-        "blood_type": row["blood_type"],
-        "insurance": row["insurance"],
-        "allergies": row["allergies"],
-        "chronic_conditions": row["chronic_conditions"],
         "poliklinik": row["poliklinik"],
         "default_poli": row["poliklinik"],
         "defaultPoli": row["poliklinik"],
         "dokter": row["dokter"],
-        "medical_notes": med_notes,
-        "medicalNotes": med_notes,
-        "medical_history": medical_history,
         "enrolled_image": row["enrolled_image"]
         or f"images/enrolled/{row['person_id']}.jpg",
         "positive_test_image": row["positive_test_image"]
         or f"images/enrolled/{row['person_id']}.jpg",
         "enrolled_poses_count": int(row["enrolled_poses_count"] or 1),
-        "consent_accepted": consent_ok,
-        "consentAccepted": consent_ok,
-        "consent_timestamp": consent_ts,
-        "consentTimestamp": consent_ts,
     }
 
 
 def get_all_patients_map() -> dict[str, dict[str, Any]]:
-    """Mengambil seluruh pasien beserta riwayat rekam medisnya dari SQLite."""
+    """Mengambil seluruh subjek/pasien terdaftar dari SQLite."""
     init_sqlite_db()
     with _DB_LOCK, get_connection() as conn:
         patient_rows = conn.execute(
             "SELECT * FROM patients ORDER BY rowid ASC"
         ).fetchall()
-        record_rows = conn.execute(
-            "SELECT * FROM medical_records ORDER BY id DESC"
-        ).fetchall()
-
-        history_by_pid: dict[str, list[dict[str, str]]] = {}
-        history_by_rm: dict[str, list[dict[str, str]]] = {}
-        for r in record_rows:
-            entry = {
-                "date": r["visit_date"],
-                "poliklinik": r["poliklinik"],
-                "doctor": r["doctor"],
-                "diagnosis": r["diagnosis"],
-                "treatment": r["treatment"],
-            }
-            history_by_pid.setdefault(r["person_id"], []).append(entry)
-            history_by_rm.setdefault(r["no_rm"], []).append(entry)
 
         result: dict[str, dict[str, Any]] = {}
         for p in patient_rows:
             pid = p["person_id"]
-            rm = p["no_rm"]
-            hist = history_by_pid.get(pid) or history_by_rm.get(rm) or []
-            result[pid] = _row_to_patient_dict(p, hist)
+            result[pid] = _row_to_patient_dict(p)
 
-        # Profil utama mencantumkan seluruh sampel wajah yang tertaut kepadanya
-        # (mis. RM-2026-501B <- 2702385671, MHS-WEBCAM-USER, RM-2026-58DB, RM-2026-A204).
         linked_by_canonical: dict[str, list[str]] = {}
         for pid, info in result.items():
             linked_by_canonical.setdefault(info["canonical_person_id"], []).append(pid)
@@ -534,21 +491,7 @@ def get_patient_by_id_or_rm(identifier: str) -> dict[str, Any] | None:
         ).fetchone()
         if not row:
             return None
-        records = conn.execute(
-            "SELECT * FROM medical_records WHERE person_id = ? OR no_rm = ? ORDER BY id DESC",
-            (row["person_id"], row["no_rm"]),
-        ).fetchall()
-        history = [
-            {
-                "date": r["visit_date"],
-                "poliklinik": r["poliklinik"],
-                "doctor": r["doctor"],
-                "diagnosis": r["diagnosis"],
-                "treatment": r["treatment"],
-            }
-            for r in records
-        ]
-        return _row_to_patient_dict(row, history)
+        return _row_to_patient_dict(row)
 
 
 def search_patient_query(query: str) -> dict[str, Any] | None:
@@ -586,74 +529,40 @@ def search_patient_query(query: str) -> dict[str, Any] | None:
 
         if not row:
             return None
-
-        records = conn.execute(
-            "SELECT * FROM medical_records WHERE person_id = ? OR no_rm = ? ORDER BY id DESC",
-            (row["person_id"], row["no_rm"]),
-        ).fetchall()
-        history = [
-            {
-                "date": r["visit_date"],
-                "poliklinik": r["poliklinik"],
-                "doctor": r["doctor"],
-                "diagnosis": r["diagnosis"],
-                "treatment": r["treatment"],
-            }
-            for r in records
-        ]
-        return _row_to_patient_dict(row, history)
+        return _row_to_patient_dict(row)
 
 
 def upsert_patient(resp_payload: dict[str, Any]) -> dict[str, Any]:
-    """Menyimpan atau memperbarui pasien baru beserta persetujuan UU PDP ke SQLite."""
+    """Menyimpan atau memperbarui pasien baru ke SQLite."""
     init_sqlite_db()
     now = _now_iso()
     person_id = str(resp_payload["personId"]).strip()
     canonical_pid = str(resp_payload.get("canonicalPersonId") or person_id).strip()
     no_rm = str(resp_payload.get("noRm") or person_id).strip()
-    birth_date = str(
-        resp_payload.get("birthDate") or resp_payload.get("birth_date") or "1995-01-01"
-    ).strip()
-    med_notes = str(
-        resp_payload.get("medicalNotes")
-        or resp_payload.get("medical_notes")
-        or "Pasien baru terdaftar"
-    ).strip()
     gender_label = str(resp_payload.get("gender") or "Laki-laki").strip()
     gender_code = "L" if gender_label in ("L", "Laki-laki") else "P"
     gender_full = "Laki-laki" if gender_code == "L" else "Perempuan"
-    consent_ok = 1 if resp_payload.get("consentAccepted", True) else 0
-    consent_ts = str(resp_payload.get("consentTimestamp") or now)
 
     with _DB_LOCK, get_connection() as conn:
         conn.execute(
             """
             INSERT INTO patients (
                 person_id, canonical_person_id, no_rm, nim, nik, full_name,
-                birth_date, gender, gender_label, age, blood_type, insurance,
-                allergies, chronic_conditions, poliklinik, dokter, medical_notes,
+                gender, gender_label, age, poliklinik, dokter,
                 enrolled_image, positive_test_image, enrolled_poses_count,
-                consent_accepted, consent_timestamp, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(person_id) DO UPDATE SET
                 canonical_person_id = excluded.canonical_person_id,
                 no_rm = excluded.no_rm,
                 nik = excluded.nik,
                 full_name = excluded.full_name,
-                birth_date = excluded.birth_date,
                 gender = excluded.gender,
                 gender_label = excluded.gender_label,
                 age = excluded.age,
-                blood_type = excluded.blood_type,
-                insurance = excluded.insurance,
-                allergies = excluded.allergies,
-                chronic_conditions = excluded.chronic_conditions,
                 poliklinik = excluded.poliklinik,
                 dokter = excluded.dokter,
-                medical_notes = excluded.medical_notes,
                 enrolled_poses_count = excluded.enrolled_poses_count,
-                consent_accepted = excluded.consent_accepted,
-                consent_timestamp = excluded.consent_timestamp,
                 updated_at = excluded.updated_at
             """,
             (
@@ -663,116 +572,22 @@ def upsert_patient(resp_payload: dict[str, Any]) -> dict[str, Any]:
                 no_rm,
                 str(resp_payload.get("nik") or "3273010000000000"),
                 str(resp_payload["fullName"]),
-                birth_date,
                 gender_code,
                 gender_full,
                 int(resp_payload.get("age") or 30),
-                str(resp_payload.get("bloodType") or "O+"),
-                str(resp_payload.get("insurance") or "BPJS Kesehatan"),
-                str(resp_payload.get("allergies") or "Tidak Ada Alergi"),
-                str(resp_payload.get("chronicConditions") or "Tidak Ada"),
                 str(resp_payload.get("poliklinik") or "Poli Umum"),
                 str(resp_payload.get("dokter") or "dr. Sinta Maharani"),
-                med_notes,
                 f"images/enrolled/{person_id}.jpg",
                 f"images/enrolled/{person_id}.jpg",
                 int(resp_payload.get("enrolledPosesCount") or 1),
-                consent_ok,
-                consent_ts,
                 now,
                 now,
             ),
         )
-
-        existing_rec = conn.execute(
-            "SELECT COUNT(*) FROM medical_records WHERE person_id = ?",
-            (person_id,),
-        ).fetchone()[0]
-        if existing_rec == 0:
-            history_list = resp_payload.get("medicalHistory") or []
-            for item in reversed(history_list):
-                if isinstance(item, dict):
-                    conn.execute(
-                        """
-                        INSERT INTO medical_records (
-                            person_id, no_rm, visit_date, poliklinik,
-                            doctor, diagnosis, treatment, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            person_id,
-                            no_rm,
-                            str(item.get("date") or now[:10]),
-                            str(item.get("poliklinik") or "Poli Umum"),
-                            str(item.get("doctor") or "dr. Sinta Maharani"),
-                            str(item.get("diagnosis") or "Pemeriksaan Awal (Z00.0)"),
-                            str(item.get("treatment") or "-"),
-                            now,
-                        ),
-                    )
         conn.commit()
 
     _sync_sqlite_to_metadata_files()
     return get_patient_by_id_or_rm(person_id) or {}
-
-
-def insert_medical_record(
-    person_id: str, no_rm: str, new_entry: dict[str, str]
-) -> list[dict[str, str]]:
-    """Menambahkan catatan pemeriksaan dokter berstandar ICD-10 ke tabel `medical_records` SQLite."""
-    init_sqlite_db()
-    now = _now_iso()
-    with _DB_LOCK, get_connection() as conn:
-        patient_row = conn.execute(
-            "SELECT person_id, no_rm FROM patients WHERE lower(person_id) = lower(?) OR lower(no_rm) = lower(?) ORDER BY rowid ASC LIMIT 1",
-            (person_id, no_rm),
-        ).fetchone()
-
-        target_pid = patient_row["person_id"] if patient_row else person_id
-        target_rm = patient_row["no_rm"] if patient_row else no_rm
-
-        if patient_row:
-            conn.execute(
-                """
-                INSERT INTO medical_records (
-                    person_id, no_rm, visit_date, poliklinik,
-                    doctor, diagnosis, treatment, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    target_pid,
-                    target_rm,
-                    str(new_entry.get("date") or now[:10]),
-                    str(new_entry.get("poliklinik") or "Poli Umum"),
-                    str(new_entry.get("doctor") or "dr. Sinta Maharani"),
-                    str(new_entry.get("diagnosis") or "-"),
-                    str(new_entry.get("treatment") or "-"),
-                    now,
-                ),
-            )
-            conn.execute(
-                "UPDATE patients SET updated_at = ? WHERE no_rm = ?",
-                (now, target_rm),
-            )
-            conn.commit()
-
-        rows = conn.execute(
-            "SELECT * FROM medical_records WHERE person_id = ? OR no_rm = ? ORDER BY id DESC",
-            (target_pid, target_rm),
-        ).fetchall()
-        history = [
-            {
-                "date": r["visit_date"],
-                "poliklinik": r["poliklinik"],
-                "doctor": r["doctor"],
-                "diagnosis": r["diagnosis"],
-                "treatment": r["treatment"],
-            }
-            for r in rows
-        ]
-
-    _sync_sqlite_to_metadata_files()
-    return history if history else [new_entry]
 
 
 def insert_attendance_log(item: dict[str, Any]) -> None:
@@ -786,9 +601,9 @@ def insert_attendance_log(item: dict[str, Any]) -> None:
             """
             INSERT OR REPLACE INTO attendance_logs (
                 attendance_id, timestamp, person_id, no_rm, full_name,
-                gender, allergies, poliklinik, queue_number, status,
+                gender, poliklinik, queue_number, status,
                 verification_method, similarity
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 att_id,
@@ -797,7 +612,6 @@ def insert_attendance_log(item: dict[str, Any]) -> None:
                 str(item.get("NoRM") or item.get("ID") or "-"),
                 str(item.get("FullName") or "-"),
                 str(item.get("Gender") or "-"),
-                str(item.get("Allergies") or "Tidak Ada Alergi"),
                 str(item.get("Poliklinik") or "Poli Umum"),
                 str(item.get("QueueNumber") or "-"),
                 str(item.get("Status") or "QUEUE_ISSUED"),
@@ -831,7 +645,6 @@ def get_attendance_logs(limit: int = 150) -> list[dict[str, Any]]:
                 "NoRM": r["no_rm"],
                 "FullName": r["full_name"],
                 "Gender": r["gender"],
-                "Allergies": r["allergies"],
                 "Poliklinik": r["poliklinik"],
                 "QueueNumber": r["queue_number"],
                 "Status": r["status"],
@@ -957,13 +770,10 @@ def load_queue_state_from_sqlite() -> dict[str, Any] | None:
 
 
 def get_database_diagnostics() -> dict[str, Any]:
-    """Mengembalikan informasi diagnostik & statistik tabel SQLite untuk ditampilkan di Dashboard."""
+    """Mengembalikan informasi diagnostik & statistik tabel SQLite."""
     init_sqlite_db()
     with _DB_LOCK, get_connection() as conn:
         patients_count = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
-        records_count = conn.execute(
-            "SELECT COUNT(*) FROM medical_records"
-        ).fetchone()[0]
         logs_count = conn.execute(
             "SELECT COUNT(*) FROM attendance_logs"
         ).fetchone()[0]
@@ -983,7 +793,6 @@ def get_database_diagnostics() -> dict[str, Any]:
         "status": "CONNECTED",
         "tables": {
             "patients": int(patients_count),
-            "medical_records": int(records_count),
             "attendance_logs": int(logs_count),
             "poli_queues": int(queues_count),
             "active_queue_slots": int(active_slots_count),
@@ -1012,16 +821,10 @@ def _sync_sqlite_to_metadata_files() -> None:
             "no_rm",
             "nik",
             "full_name",
-            "birth_date",
             "gender",
             "age",
-            "blood_type",
-            "insurance",
-            "allergies",
-            "chronic_conditions",
             "poliklinik",
             "dokter",
-            "medical_notes",
             "enrolled_image",
             "positive_test_image",
         ]

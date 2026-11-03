@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Serverless real-time attendance API.
+Description: Serverless Real-Time Face Recognition & Biometric Queue Testbed API.
 
 Parameters:
   RekognitionCollectionId:
@@ -10,7 +10,7 @@ Parameters:
 
 Globals:
   Function:
-    Timeout: 2
+    Timeout: 5
     MemorySize: 1024
     Runtime: python3.12
 
@@ -39,6 +39,12 @@ Resources:
             RestApiId: !Ref AttendanceApi
             Path: /attendance/enroll
             Method: post
+        LookupManualRm:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AttendanceApi
+            Path: /attendance/lookup
+            Method: post
         GetQueue:
           Type: Api
           Properties:
@@ -62,12 +68,6 @@ Resources:
           Properties:
             RestApiId: !Ref AttendanceApi
             Path: /attendance/queues/advance
-            Method: post
-        AddMedicalRecord:
-          Type: Api
-          Properties:
-            RestApiId: !Ref AttendanceApi
-            Path: /attendance/medical-record
             Method: post
       Policies:
         - DynamoDBCrudPolicy:
